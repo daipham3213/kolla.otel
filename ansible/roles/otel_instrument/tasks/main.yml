@@ -1,0 +1,50 @@
+---
+# Injects the opentelemetry-operator auto-instrumentation agent and the OTEL_*
+# environment into running OpenStack service containers, then recreates them.
+# Mirrors kolla's own service-check-containers / handler pattern (the
+# kolla_container + kolla_container_facts modules).
+
+- name: Validate OpenTelemetry configuration
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - otel_exporter_endpoint | length > 0
+    fail_msg: >-
+      'otel_exporter_endpoint' is required. Set it in globals.yml or pass a
+      config file to `kolla-ansible instrument --config`.
+
+- name: Compute deployment-wide resource attributes
+  ansible.builtin.set_fact:
+    otel_resource_attributes_base: >-
+      {{ {'service.namespace': otel_service_namespace}
+         | combine({'deployment.environment': otel_deployment_environment}
+                   if otel_deployment_environment | length > 0 else {})
+         | combine(otel_resource_attributes_extra) }}
+
+- name: Discover which target containers are present on this host
+  become: true
+  kolla_container_facts:
+    container_engine: "{{ kolla_container_engine }}"
+    action: get_containers
+    name: "{{ otel_instrument_services | map(attribute='container_name') | list }}"
+  register: otel_container_facts
+
+- name: Gather current environment of the present containers
+  become: true
+  kolla_container_facts:
+    container_engine: "{{ kolla_container_engine }}"
+    action: get_containers_env
+    name: "{{ otel_container_facts.containers.keys() | list }}"
+  register: otel_env_facts
+  when: otel_container_facts.containers | length > 0
+
+- name: Inject OpenTelemetry into each present container
+  ansible.builtin.include_tasks: inject.yml
+  loop: >-
+    {{ otel_instrument_services
+       | selectattr('container_name', 'in',
+                    otel_container_facts.containers.keys() | list)
+       | list }}
+  loop_control:
+    loop_var: otel_service
+    label: "{{ otel_service.name }} ({{ otel_service.container_name }})"

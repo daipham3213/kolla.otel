@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: otel_instrument
+  author: kolla-otel
+  description: >-
+    Inject opentelemetry-operator auto-instrumentation agents and the OTEL_*
+    environment into running Kolla Ansible OpenStack service containers.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - kolla
+    - openstack
+    - opentelemetry
+    - observability
+dependencies: []

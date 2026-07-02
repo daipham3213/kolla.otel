@@ -1,0 +1,31 @@
+# Example kolla-otel instrumentation configuration.
+#
+# Feed this to the CLI:
+#     kolla-ansible instrument --config examples/instrumentation.yml \
+#         --output-dir /etc/kolla
+#
+otel:
+  # OTLP collector reachable from the OpenStack service containers.
+  exporter_endpoint: http://otel-collector.observability.svc:4317
+  exporter_protocol: grpc
+  # Pin the auto-instrumentation image tag for reproducible deployments.
+  image_version: "0.50b0"
+  deployment_environment: production
+  sampler: parentbased_traceidratio
+  sampler_arg: "0.25"
+  resource_attributes:
+    service.version: "2024.1"
+
+services:
+  - name: nova-api
+    language: python
+  - name: neutron-server
+    language: python
+    otel_service_name: neutron
+  - name: keystone
+    language: python
+    resource_attributes:
+      service.tier: identity
+  - name: cinder-scheduler
+    language: python
+    enabled: false          # temporarily excluded from instrumentation

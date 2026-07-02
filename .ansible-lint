@@ -1,0 +1,17 @@
+# ansible-lint configuration for the otel_instrument role/playbook.
+#
+# The role calls kolla-ansible's custom modules (kolla_container,
+# kolla_container_facts). They are resolved by pointing ANSIBLE_LIBRARY at the
+# installed kolla-ansible tree — `tox -e ansible` and the CI job do this. Run
+# it that way rather than a bare `ansible-lint`.
+profile: production
+
+exclude_paths:
+  - .venv/
+  - .tox/
+  - .git/
+
+# kolla globals (kolla_container_engine, docker_common_options, …) come from
+# kolla-ansible's group_vars/all.yml at run time, not from this repo.
+skip_list:
+  - var-naming[no-role-prefix]  # otel_* vars are the documented public API

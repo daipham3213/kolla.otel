@@ -1,0 +1,132 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kolla-otel"
+dynamic = ["version"]
+description = "Zero-code OpenTelemetry auto-instrumentation for Kolla Ansible"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Pham Le Gia Dai" }]
+keywords = ["kolla-ansible", "opentelemetry", "openstack", "observability"]
+
+# Only what the package genuinely imports at runtime:
+#   * cliff  -> the Command base class for the CLI entry point.
+#   * PyYAML -> reading the config document and rendering the Kolla overlay.
+# Both are already present in every Kolla Ansible environment.
+dependencies = [
+    "kolla-ansible",
+    "cliff",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+lint = [
+    "ruff==0.15.15",
+]
+type = [
+    "mypy>=1.13",
+    "types-PyYAML",
+]
+# Lint the Ansible role/playbook.
+ansible = [
+    "ansible-lint>=24.0",
+]
+dev = [
+    "kolla-otel[test,lint,type,ansible]",
+    "hatch>=1.9",
+    "tox>=4.0",
+    "prek>=0.4",
+]
+
+[project.entry-points."kolla_ansible.cli"]
+instrument = "kolla_otel.cli:Instrument"
+
+[project.urls]
+Homepage = "https://github.com/openstack/kolla-ansible"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+fallback_version = "0.0.0"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kolla_otel"]
+exclude = ["kolla_otel/tests"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"ansible" = "share/kolla-ansible/ansible"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "kolla_otel",
+    "ansible",
+    "examples",
+    "README.md",
+    "tox.ini",
+    "prek.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["kolla_otel/tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 79
+target-version = "py310"
+src = ["kolla_otel", "examples"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "PT",   # flake8-pytest-style
+    "RUF",  # ruff-specific rules
+]
+ignore = ["RUF022"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kolla_otel"]
+split-on-trailing-comma = true
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+
+[tool.mypy]
+python_version = "3.10"
+files = ["kolla_otel"]
+exclude = ["kolla_otel/tests/"]
+disallow_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["cliff.*", "kolla_ansible.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["kolla_otel"]
+omit = ["kolla_otel/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]

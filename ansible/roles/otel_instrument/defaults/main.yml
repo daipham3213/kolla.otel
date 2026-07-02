@@ -1,0 +1,107 @@
+---
+###############################################################################
+# kolla-otel :: OpenTelemetry auto-instrumentation injection
+#
+# These defaults mirror the kolla_otel Python domain model (OTelConfig +
+# per-language injectors). Override them in globals.yml or via the CLI's
+# --config file (translated into extra-vars by `kolla-ansible instrument`).
+###############################################################################
+
+# --- OTLP export configuration ---------------------------------------------
+# The collector endpoint reachable from inside the service containers.
+otel_exporter_endpoint: ""            # REQUIRED, e.g. http://otel-collector:4317
+otel_exporter_protocol: "grpc"        # grpc | http/protobuf
+
+otel_traces_exporter: "otlp"
+otel_metrics_exporter: "otlp"
+otel_logs_exporter: "otlp"
+
+otel_traces_sampler: "parentbased_traceidratio"
+otel_traces_sampler_arg: "1.0"
+otel_propagators: "tracecontext,baggage"
+
+# --- Resource attributes ----------------------------------------------------
+otel_service_namespace: "openstack"
+otel_deployment_environment: ""       # optional, e.g. "production"
+# Extra deployment-wide resource attributes (merged beneath per-service ones).
+otel_resource_attributes_extra: {}
+
+# --- Auto-instrumentation images (opentelemetry-operator) -------------------
+otel_image_registry: "ghcr.io/open-telemetry/opentelemetry-operator"
+otel_image_version: "latest"
+
+# Per-language injection strategy: which image ships the agent, where its
+# artifacts live in that image, where they mount in the target container, and
+# the environment that activates the agent from that mount path.
+otel_languages:
+  python:
+    image_component: "autoinstrumentation-python"
+    source_path: "/autoinstrumentation"
+    mount_path: "/otel-auto-instrumentation-python"
+    activation:
+      PYTHONPATH: "/otel-auto-instrumentation-python/opentelemetry/instrumentation/auto_instrumentation:/otel-auto-instrumentation-python"
+  java:
+    image_component: "autoinstrumentation-java"
+    source_path: "/javaagent.jar"
+    mount_path: "/otel-auto-instrumentation-java"
+    activation:
+      JAVA_TOOL_OPTIONS: "-javaagent:/otel-auto-instrumentation-java/javaagent.jar"
+  nodejs:
+    image_component: "autoinstrumentation-nodejs"
+    source_path: "/autoinstrumentation"
+    mount_path: "/otel-auto-instrumentation-nodejs"
+    activation:
+      NODE_OPTIONS: "--require /otel-auto-instrumentation-nodejs/autoinstrumentation.js"
+  dotnet:
+    image_component: "autoinstrumentation-dotnet"
+    source_path: "/autoinstrumentation"
+    mount_path: "/otel-auto-instrumentation-dotnet"
+    activation:
+      CORECLR_ENABLE_PROFILING: "1"
+      CORECLR_PROFILER: "{918728DD-259F-4A6A-AC2B-B85E1B658318}"
+      CORECLR_PROFILER_PATH: "/otel-auto-instrumentation-dotnet/linux-x64/OpenTelemetry.AutoInstrumentation.Native.so"
+      DOTNET_STARTUP_HOOKS: "/otel-auto-instrumentation-dotnet/net/OpenTelemetry.AutoInstrumentation.StartupHook.dll"
+      DOTNET_ADDITIONAL_DEPS: "/otel-auto-instrumentation-dotnet/AdditionalDeps"
+      DOTNET_SHARED_STORE: "/otel-auto-instrumentation-dotnet/store"
+      OTEL_DOTNET_AUTO_HOME: "/otel-auto-instrumentation-dotnet"
+
+# --- Target services --------------------------------------------------------
+# Which containers to instrument. `name` is the OTel service name and volume
+# suffix; `container_name` is the kolla/Docker container to recreate. Only
+# containers actually present on a host are touched, so the same list is safe
+# across controllers and compute nodes.
+#
+# `otel_service_name` (optional) overrides OTEL_SERVICE_NAME; add a per-service
+# `resource_attributes` mapping to layer extra attributes.
+otel_instrument_services:
+  # Nova
+  - {name: nova-api, container_name: nova_api, language: python}
+  - {name: nova-conductor, container_name: nova_conductor, language: python}
+  - {name: nova-scheduler, container_name: nova_scheduler, language: python}
+  # nova_compute runs privileged with ipc_mode=host; the role reads those back
+  # from the running container and re-applies them on recreate (see README).
+  - {name: nova-compute, container_name: nova_compute, language: python}
+  # Cinder
+  - {name: cinder-api, container_name: cinder_api, language: python}
+  - {name: cinder-scheduler, container_name: cinder_scheduler, language: python}
+  - {name: cinder-volume, container_name: cinder_volume, language: python}
+  - {name: cinder-backup, container_name: cinder_backup, language: python}
+  # Other core services
+  - {name: keystone, container_name: keystone, language: python}
+  - {name: glance-api, container_name: glance_api, language: python}
+  - {name: neutron-server, container_name: neutron_server, language: python}
+  - {name: placement-api, container_name: placement_api, language: python}
+  - {name: heat-api, container_name: heat_api, language: python}
+  - {name: heat-engine, container_name: heat_engine, language: python}
+
+# Common OTEL_* environment shared by every instrumented service. Per-service
+# identity (OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES) is added in tasks.
+otel_common_environment:
+  OTEL_EXPORTER_OTLP_ENDPOINT: "{{ otel_exporter_endpoint }}"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "{{ otel_exporter_protocol }}"
+  OTEL_TRACES_EXPORTER: "{{ otel_traces_exporter }}"
+  OTEL_METRICS_EXPORTER: "{{ otel_metrics_exporter }}"
+  OTEL_LOGS_EXPORTER: "{{ otel_logs_exporter }}"
+  OTEL_TRACES_SAMPLER: "{{ otel_traces_sampler }}"
+  OTEL_TRACES_SAMPLER_ARG: "{{ otel_traces_sampler_arg }}"
+  OTEL_PROPAGATORS: "{{ otel_propagators }}"

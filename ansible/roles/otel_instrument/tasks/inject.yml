@@ -1,0 +1,126 @@
+---
+# Injects one service. Included per target container from tasks/main.yml with
+# `otel_service` set. Runs only for containers already confirmed present.
+
+- name: "OTel | Resolve language and derived values | {{ otel_service.name }}"
+  ansible.builtin.set_fact:
+    otel_lang: "{{ otel_languages[otel_service.language] }}"
+    otel_attrs: "{{ otel_container_facts.containers[otel_service.container_name] }}"
+    otel_current_env: "{{ otel_env_facts.envs[otel_service.container_name] | default({}) }}"
+    otel_volume_name: >-
+      otel_auto_instrumentation_{{ otel_service.name
+        | lower | regex_replace('[^a-z0-9_.-]+', '-') }}_{{ otel_service.language }}
+
+- name: "OTel | Resolve agent image | {{ otel_service.name }}"
+  ansible.builtin.set_fact:
+    otel_agent_image: >-
+      {{ otel_image_registry | regex_replace('/$', '') }}/{{
+         otel_lang.image_component }}:{{ otel_image_version }}
+
+# --- Stage the agent artifacts into a named volume (once) ------------------
+- name: "OTel | Check whether the agent volume exists | {{ otel_service.name }}"
+  become: true
+  kolla_container_facts:
+    container_engine: "{{ kolla_container_engine }}"
+    action: get_volumes
+    name: "{{ otel_volume_name }}"
+  register: otel_volume_facts
+
+- name: "OTel | Create and populate the agent volume | {{ otel_service.name }}"
+  when: otel_volume_name not in otel_volume_facts.volumes
+  become: true
+  block:
+    - name: "OTel | Create agent volume | {{ otel_service.name }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ kolla_container_engine }}"
+          - volume
+          - create
+          - "{{ otel_volume_name }}"
+      changed_when: true
+
+    - name: "OTel | Copy agent from image into volume | {{ otel_service.name }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ kolla_container_engine }}"
+          - run
+          - "--rm"
+          - "--entrypoint"
+          - cp
+          - "--volume"
+          - "{{ otel_volume_name }}:/otel-dst"
+          - "{{ otel_agent_image }}"
+          - "-a"
+          - "{{ otel_lang.source_path | regex_replace('/$', '') }}/."
+          - "/otel-dst/"
+      changed_when: true
+
+- name: "OTel | Compute resource attributes | {{ otel_service.name }}"
+  vars:
+    otel_ra: >-
+      {{ otel_resource_attributes_base
+         | combine(otel_service.resource_attributes | default({})) }}
+    otel_ra_sorted: "{{ otel_ra | dict2items | sort(attribute='key') }}"
+  ansible.builtin.set_fact:
+    otel_ra_string: >-
+      {{ otel_ra_sorted | map(attribute='key')
+         | zip(otel_ra_sorted | map(attribute='value'))
+         | map('join', '=') | join(',') }}
+
+- name: "OTel | Build environment and volumes | {{ otel_service.name }}"
+  ansible.builtin.set_fact:
+    otel_new_environment: >-
+      {{ otel_current_env
+         | combine(otel_common_environment)
+         | combine({
+             'OTEL_SERVICE_NAME':
+               otel_service.otel_service_name | default(otel_service.name),
+             'OTEL_RESOURCE_ATTRIBUTES': otel_ra_string,
+           })
+         | combine(otel_lang.activation) }}
+    otel_new_volumes: >-
+      {{ (otel_attrs.HostConfig.Binds | default([]))
+         | union([otel_volume_name ~ ':' ~ otel_lang.mount_path ~ ':ro']) }}
+
+# Docker reports healthcheck durations in nanoseconds; kolla's
+# parse_healthcheck expects seconds and every key present, so convert here.
+- name: "OTel | Preserve healthcheck | {{ otel_service.name }}"
+  vars:
+    hc: "{{ otel_attrs.Config.Healthcheck | default({}) }}"
+  ansible.builtin.set_fact:
+    otel_healthcheck: >-
+      {{ omit if (not hc or hc.Test | default([]) in [['NONE'], []]) else {
+           'test': hc.Test,
+           'interval': (hc.Interval | default(0) | int) // 1000000000,
+           'timeout': (hc.Timeout | default(0) | int) // 1000000000,
+           'start_period': (hc.StartPeriod | default(0) | int) // 1000000000,
+           'retries': hc.Retries | default(3) | int,
+         } }}
+
+# --- Recreate the container with the instrumentation applied ---------------
+# Mirrors kolla's own "recreate_or_restart_container" handler idiom. Attributes
+# kolla's recreate would not otherwise preserve (privileged, pid/ipc mode,
+# capabilities, healthcheck) are read back from the running container. This is
+# what makes special containers such as nova_compute (privileged, ipc_mode
+# host) survive the recreate unchanged apart from the injected env/volume.
+- name: "OTel | Recreate container with OpenTelemetry | {{ otel_service.name }}"
+  become: true
+  kolla_container:
+    action: recreate_or_restart_container
+    common_options: "{{ docker_common_options }}"
+    name: "{{ otel_service.container_name }}"
+    image: "{{ otel_attrs.Config.Image }}"
+    environment: "{{ otel_new_environment }}"
+    volumes: "{{ otel_new_volumes }}"
+    privileged: "{{ otel_attrs.HostConfig.Privileged | default(false) }}"
+    pid_mode: >-
+      {{ otel_attrs.HostConfig.PidMode
+         if (otel_attrs.HostConfig.PidMode | default('')) == 'host'
+         else omit }}
+    ipc_mode: >-
+      {{ otel_attrs.HostConfig.IpcMode
+         if (otel_attrs.HostConfig.IpcMode | default('')) == 'host'
+         else omit }}
+    cap_add: "{{ otel_attrs.HostConfig.CapAdd | default([]) or omit }}"
+    security_opt: "{{ otel_attrs.HostConfig.SecurityOpt | default([]) or omit }}"
+    healthcheck: "{{ otel_healthcheck }}"

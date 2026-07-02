@@ -1,0 +1,41 @@
+# Git hooks for this repo, in prek's native TOML format
+# (https://github.com/j178/prek). Run with:
+#
+#   prek install           # install the git hook
+#   prek run --all-files    # run every hook manually
+#
+minimum_pre_commit_version = "3.0.0"
+default_language_version = { python = "python3" }
+
+# Never touch IDE files, vendored virtualenvs or tooling caches.
+exclude = '^(\.idea/|\.vscode/|\.tox/|\.venv/)'
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v5.0.0"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-yaml" },
+  { id = "check-toml" },
+  { id = "check-added-large-files" },
+  { id = "check-merge-conflict" },
+  { id = "debug-statements" },
+]
+
+# Lint + format with ruff. Pinned to match the [lint] extra and tox env.
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.15.15"
+hooks = [
+  { id = "ruff-check", args = ["--fix"] },
+  { id = "ruff-format" },
+]
+
+# Type-check only the runtime package (tests are excluded via pyproject).
+[[repos]]
+repo = "https://github.com/pre-commit/mirrors-mypy"
+rev = "v1.13.0"
+hooks = [
+  { id = "mypy", files = '^kolla_otel/', exclude = '^kolla_otel/tests/', additional_dependencies = ["types-PyYAML"] },
+]
