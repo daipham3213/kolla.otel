@@ -12,9 +12,9 @@
                    recursive=True) }}
     otel_attrs: "{{ otel_container_facts.containers[otel_service.container_name] }}"
     otel_current_env: "{{ otel_env_facts.envs[otel_service.container_name] | default({}) }}"
-    otel_volume_name: >-
-      otel_auto_instrumentation_{{ otel_service.name
-        | lower | regex_replace('[^a-z0-9_.-]+', '-') }}_{{ otel_service.language }}
+    # Host directory the agent is staged into and bind-mounted from. One per
+    # language (shared by every service of that language on the host).
+    otel_host_lib_dir: "{{ otel_host_lib_path }}/{{ otel_service.language }}"
 
 - name: "OTel | Resolve agent image | {{ otel_service.name }}"
   ansible.builtin.set_fact:
@@ -22,43 +22,39 @@
       {{ otel_image_registry | regex_replace('/$', '') }}/{{
          otel_lang.image_component }}:{{ otel_image_version }}
 
-# --- Stage the agent artifacts into a named volume (once) ------------------
-- name: "OTel | Check whether the agent volume exists | {{ otel_service.name }}"
+# --- Stage the agent artifacts into a host path (once per language) --------
+- name: "OTel | Ensure host library directory exists | {{ otel_service.name }}"
   become: true
-  kolla_container_facts:
-    container_engine: "{{ kolla_container_engine }}"
-    action: get_volumes
-    name: "{{ otel_volume_name }}"
-  register: otel_volume_facts
+  ansible.builtin.file:
+    path: "{{ otel_host_lib_dir }}"
+    state: directory
+    mode: "0755"
 
-- name: "OTel | Create and populate the agent volume | {{ otel_service.name }}"
-  when: otel_volume_name not in otel_volume_facts.volumes
+- name: "OTel | Check whether the agent is already staged | {{ otel_service.name }}"
   become: true
-  block:
-    - name: "OTel | Create agent volume | {{ otel_service.name }}"
-      ansible.builtin.command:
-        argv:
-          - "{{ kolla_container_engine }}"
-          - volume
-          - create
-          - "{{ otel_volume_name }}"
-      changed_when: true
+  ansible.builtin.find:
+    paths: "{{ otel_host_lib_dir }}"
+    file_type: any
+    recurse: false
+  register: otel_staged
 
-    - name: "OTel | Copy agent from image into volume | {{ otel_service.name }}"
-      ansible.builtin.command:
-        argv:
-          - "{{ kolla_container_engine }}"
-          - run
-          - "--rm"
-          - "--entrypoint"
-          - cp
-          - "--volume"
-          - "{{ otel_volume_name }}:/otel-dst"
-          - "{{ otel_agent_image }}"
-          - "-a"
-          - "{{ otel_lang.source_path | regex_replace('/$', '') }}/."
-          - "/otel-dst/"
-      changed_when: true
+- name: "OTel | Copy agent from image into host path | {{ otel_service.name }}"
+  when: otel_staged.matched == 0
+  become: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kolla_container_engine }}"
+      - run
+      - "--rm"
+      - "--entrypoint"
+      - cp
+      - "--volume"
+      - "{{ otel_host_lib_dir }}:/otel-dst"
+      - "{{ otel_agent_image }}"
+      - "-a"
+      - "{{ otel_lang.source_path | regex_replace('/$', '') }}/."
+      - "/otel-dst/"
+  changed_when: true
 
 - name: "OTel | Compute resource attributes | {{ otel_service.name }}"
   vars:
@@ -85,7 +81,7 @@
          | combine(otel_lang.activation) }}
     otel_new_volumes: >-
       {{ (otel_attrs.HostConfig.Binds | default([]))
-         | union([otel_volume_name ~ ':' ~ otel_lang.mount_path ~ ':ro']) }}
+         | union([otel_host_lib_dir ~ ':' ~ otel_lang.mount_path ~ ':ro']) }}
 
 # Docker reports healthcheck durations in nanoseconds; kolla's
 # parse_healthcheck expects seconds and every key present, so convert here.

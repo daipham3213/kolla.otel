@@ -18,10 +18,11 @@ role), which for each target container **present on a host**:
 
 1. Resolves the matching auto-instrumentation image
    (e.g. `ghcr.io/.../autoinstrumentation-python:<tag>`).
-2. Stages the agent artifacts from that image into a **named volume** — the
-   Docker/Podman equivalent of the operator's Kubernetes init-container.
+2. Stages the agent artifacts from that image into a **host directory**
+   (`/etc/kolla/opentelemetry/<language>`) — the Docker/Podman equivalent of
+   the operator's Kubernetes init-container.
 3. Reads the container's current state (`kolla_container_facts`) and
-   **recreates it** (`kolla_container`) with the agent volume mounted
+   **recreates it** (`kolla_container`) with that host path **bind-mounted**
    read-only plus the activation environment (`PYTHONPATH`,
    `JAVA_TOOL_OPTIONS`, `NODE_OPTIONS`, CoreCLR hooks) and the standard
    `OTEL_*` export/resource variables merged on top of the existing

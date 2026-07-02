@@ -8,20 +8,24 @@ of the operator's Kubernetes init-container pattern.
 ## What it does, per target container present on a host
 
 1. **Stages the agent** from the language's auto-instrumentation image
-   (e.g. `autoinstrumentation-python`) into a named volume
-   (`otel_auto_instrumentation_<service>_<language>`), once.
+   (e.g. `autoinstrumentation-python`) into a host directory
+   (`{{ otel_host_lib_path }}/<language>`, default
+   `/etc/kolla/opentelemetry/<language>`), once per language.
 2. **Reads the container's current state** with `kolla_container_facts`
    (image, environment, binds, healthcheck, privileged/pid/ipc mode).
 3. **Recreates the container** with `kolla_container`
    (`recreate_or_restart_container`), adding:
-   - the agent volume mounted read-only at the language's `mount_path`;
+   - that host directory **bind-mounted** read-only at the language's
+     `mount_path`;
    - the `OTEL_*` export/resource variables and the language activation
      variables (`PYTHONPATH`, `JAVA_TOOL_OPTIONS`, `NODE_OPTIONS`, CoreCLR
      hooks) merged on top of the existing environment.
 
 Only containers that already exist on a host are touched, so a single run is
 safe across controllers and compute nodes. The step is idempotent: a second
-run finds the env and volume already present and makes no change.
+run finds the env present and the host directory already populated and makes
+no change. To re-stage a new agent version, empty (or remove) the host
+directory and re-run.
 
 ## Key variables
 
@@ -33,6 +37,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_exporter_protocol` | `grpc` (default) or `http/protobuf`. |
 | `otel_deployment_environment` | Optional `deployment.environment` attribute. |
 | `otel_image_registry` / `otel_image_version` | Agent image source/tag. |
+| `otel_host_lib_path` | Host base dir the agent is staged into (default `/etc/kolla/opentelemetry`). |
 | `otel_instrument_services` | List of `{name, container_name, language}` targets. |
 | `otel_language_defaults` | Built-in per-language image, mount path and activation env (source of truth). |
 | `otel_languages` | Per-language **overrides**, deep-merged onto `otel_language_defaults` (set only the keys you change). |

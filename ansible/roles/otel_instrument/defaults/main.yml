@@ -30,6 +30,12 @@ otel_resource_attributes_extra: {}
 otel_image_registry: "ghcr.io/open-telemetry/opentelemetry-operator"
 otel_image_version: "latest"
 
+# --- Agent staging ----------------------------------------------------------
+# The agent is copied out of the image into a host directory and bind-mounted
+# read-only into the service containers. Artifacts live under a per-language
+# subdirectory, e.g. /etc/kolla/opentelemetry/python.
+otel_host_lib_path: "/etc/kolla/opentelemetry"
+
 # Built-in per-language injection strategy (source of truth): which image
 # ships the agent, where its artifacts live in that image, where they mount in
 # the target container, and the environment that activates the agent.
