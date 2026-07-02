@@ -124,14 +124,20 @@
 
 - name: "OTel | Build environment and volumes | {{ otel_service.name }}"
   ansible.builtin.set_fact:
+    # Layered lowest -> highest precedence: existing container env, the common
+    # OTEL_* export vars, deployment-wide extra env, this service's identity,
+    # this service's own extra env, and finally the language activation (kept
+    # last so it can never be clobbered and the agent always loads).
     otel_new_environment: >-
       {{ otel_current_env
          | combine(otel_common_environment)
+         | combine(otel_extra_environment)
          | combine({
              'OTEL_SERVICE_NAME':
                otel_service.otel_service_name | default(otel_service.name),
              'OTEL_RESOURCE_ATTRIBUTES': otel_ra_string,
            })
+         | combine(otel_service.environment | default({}))
          | combine(otel_lang.activation) }}
     # Drop any existing bind whose destination is our mount_path (e.g. a mount
     # left by an earlier run — named volume or host path) before adding ours,

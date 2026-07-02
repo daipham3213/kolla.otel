@@ -137,6 +137,23 @@ def test_load_config_happy_path(valid_document: dict) -> None:
     assert specs[1].enabled is False
 
 
+def test_load_config_parses_per_service_environment() -> None:
+    """A service's `environment` map is parsed and stringified."""
+    _, specs = load_config(
+        {
+            "otel": {"exporter_endpoint": "http://c:4317"},
+            "services": [
+                {
+                    "name": "nova-api",
+                    "language": "python",
+                    "environment": {"OTEL_TRACES_SAMPLER_ARG": 0.1},
+                }
+            ],
+        }
+    )
+    assert specs[0].environment == {"OTEL_TRACES_SAMPLER_ARG": "0.1"}
+
+
 def test_load_config_rejects_non_mapping_root() -> None:
     """A non-mapping document is invalid."""
     with pytest.raises(ConfigurationError):

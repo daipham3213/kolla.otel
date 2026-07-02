@@ -121,6 +121,8 @@ class ServiceInstrumentationSpec:
         :attr:`name` when omitted.
     :param resource_attributes: Per-service resource attributes, taking
         precedence over the deployment-wide attributes.
+    :param environment: Extra environment variables for just this service,
+        layered above the common ``OTEL_*`` env (below language activation).
     :param enabled: When ``False`` the service is skipped during
         instrumentation.
     """
@@ -129,6 +131,7 @@ class ServiceInstrumentationSpec:
     language: InstrumentationLanguage
     otel_service_name: str | None = None
     resource_attributes: Mapping[str, str] = field(default_factory=dict)
+    environment: Mapping[str, str] = field(default_factory=dict)
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -291,6 +294,10 @@ def load_config(
                 resource_attributes=_as_str_mapping(
                     entry.get("resource_attributes", {}),
                     f"services[{index}].resource_attributes",
+                ),
+                environment=_as_str_mapping(
+                    entry.get("environment", {}),
+                    f"services[{index}].environment",
                 ),
                 enabled=bool(entry.get("enabled", True)),
             )
