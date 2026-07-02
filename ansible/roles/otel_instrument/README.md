@@ -7,10 +7,12 @@ of the operator's Kubernetes init-container pattern.
 
 ## What it does, per target container present on a host
 
-1. **Stages the agent** from the language's auto-instrumentation image
-   (e.g. `autoinstrumentation-python`) into a host directory
+1. **Pulls the agent image and stages it** into a host directory
    (`{{ otel_host_lib_path }}/<language>`, default
-   `/etc/kolla/opentelemetry/<language>`), once per language.
+   `/etc/kolla/opentelemetry/<language>`), once per language. The pulled
+   image id is recorded in `.<language>-image-id`; the agent is (re)copied
+   only when that id changes, so a moved tag / newer image is picked up
+   automatically on the next run.
 2. **Reads the container's current state** with `kolla_container_facts`
    (image, environment, binds, healthcheck, privileged/pid/ipc mode).
 3. **Recreates the container** with `kolla_container`
@@ -23,9 +25,9 @@ of the operator's Kubernetes init-container pattern.
 
 Only containers that already exist on a host are touched, so a single run is
 safe across controllers and compute nodes. The step is idempotent: a second
-run finds the env present and the host directory already populated and makes
-no change. To re-stage a new agent version, empty (or remove) the host
-directory and re-run.
+run pulls the image, finds the recorded image id unchanged and the env already
+present, and makes no change. Bumping `otel_image_version` (or a moved tag)
+re-stages the agent and recreates the affected containers on the next run.
 
 ## Key variables
 

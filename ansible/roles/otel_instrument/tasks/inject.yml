@@ -15,6 +15,9 @@
     # Host directory the agent is staged into and bind-mounted from. One per
     # language (shared by every service of that language on the host).
     otel_host_lib_dir: "{{ otel_host_lib_path }}/{{ otel_service.language }}"
+    # Records the image id the staged files came from (kept outside the mounted
+    # dir), so we re-stage only when the image actually changes.
+    otel_marker_file: "{{ otel_host_lib_path }}/.{{ otel_service.language }}-image-id"
 
 - name: "OTel | Resolve agent image | {{ otel_service.name }}"
   ansible.builtin.set_fact:
@@ -22,7 +25,9 @@
       {{ otel_image_registry | regex_replace('/$', '') }}/{{
          otel_lang.image_component }}:{{ otel_image_version }}
 
-# --- Stage the agent artifacts into a host path (once per language) --------
+# --- Stage the agent into a host path, refreshed when the image changes ----
+# Done once per language per run (subsequent services of the same language
+# reuse the already-staged directory).
 - name: "OTel | Ensure host library directory exists | {{ otel_service.name }}"
   become: true
   ansible.builtin.file:
@@ -30,31 +35,80 @@
     state: directory
     mode: "0755"
 
-- name: "OTel | Check whether the agent is already staged | {{ otel_service.name }}"
+- name: "OTel | Pull and stage the agent | {{ otel_service.name }}"
+  when: otel_service.language not in (otel_staged_languages | default([]))
   become: true
-  ansible.builtin.find:
-    paths: "{{ otel_host_lib_dir }}"
-    file_type: any
-    recurse: false
-  register: otel_staged
+  block:
+    - name: "OTel | Pull agent image | {{ otel_service.name }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ kolla_container_engine }}"
+          - pull
+          - "{{ otel_agent_image }}"
+      register: otel_pull
+      changed_when: >-
+        'Downloaded newer image' in otel_pull.stdout
+        or 'Writing manifest' in otel_pull.stdout
 
-- name: "OTel | Copy agent from image into host path | {{ otel_service.name }}"
-  when: otel_staged.matched == 0
-  become: true
-  ansible.builtin.command:
-    argv:
-      - "{{ kolla_container_engine }}"
-      - run
-      - "--rm"
-      - "--entrypoint"
-      - cp
-      - "--volume"
-      - "{{ otel_host_lib_dir }}:/otel-dst"
-      - "{{ otel_agent_image }}"
-      - "-a"
-      - "{{ otel_lang.source_path | regex_replace('/$', '') }}/."
-      - "/otel-dst/"
-  changed_when: true
+    - name: "OTel | Inspect the pulled image id | {{ otel_service.name }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ kolla_container_engine }}"
+          - image
+          - inspect
+          - "--format"
+          - "{{ '{{ .Id }}' }}"
+          - "{{ otel_agent_image }}"
+      register: otel_image_id
+      changed_when: false
+
+    - name: "OTel | Read the staged image marker | {{ otel_service.name }}"
+      ansible.builtin.slurp:
+        src: "{{ otel_marker_file }}"
+      register: otel_marker
+      failed_when: false
+
+    - name: "OTel | Refresh the staged agent when the image changed | {{ otel_service.name }}"
+      when: >-
+        otel_marker.content is not defined
+        or (otel_marker.content | b64decode | trim)
+           != (otel_image_id.stdout | trim)
+      block:
+        - name: "OTel | Empty the host library directory | {{ otel_service.name }}"
+          ansible.builtin.file:
+            path: "{{ otel_host_lib_dir }}"
+            state: "{{ item }}"
+            mode: "0755"
+          loop:
+            - absent
+            - directory
+
+        - name: "OTel | Copy agent from image into host path | {{ otel_service.name }}"
+          ansible.builtin.command:
+            argv:
+              - "{{ kolla_container_engine }}"
+              - run
+              - "--rm"
+              - "--entrypoint"
+              - cp
+              - "--volume"
+              - "{{ otel_host_lib_dir }}:/otel-dst"
+              - "{{ otel_agent_image }}"
+              - "-a"
+              - "{{ otel_lang.source_path | regex_replace('/$', '') }}/."
+              - "/otel-dst/"
+          changed_when: true
+
+        - name: "OTel | Record the staged image id | {{ otel_service.name }}"
+          ansible.builtin.copy:
+            dest: "{{ otel_marker_file }}"
+            content: "{{ otel_image_id.stdout | trim }}\n"
+            mode: "0644"
+
+    - name: "OTel | Mark language staged for this run | {{ otel_service.name }}"
+      ansible.builtin.set_fact:
+        otel_staged_languages: >-
+          {{ (otel_staged_languages | default([])) + [otel_service.language] }}
 
 - name: "OTel | Compute resource attributes | {{ otel_service.name }}"
   vars:
