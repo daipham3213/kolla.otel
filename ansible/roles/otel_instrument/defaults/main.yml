@@ -30,10 +30,14 @@ otel_resource_attributes_extra: {}
 otel_image_registry: "ghcr.io/open-telemetry/opentelemetry-operator"
 otel_image_version: "latest"
 
-# Per-language injection strategy: which image ships the agent, where its
-# artifacts live in that image, where they mount in the target container, and
-# the environment that activates the agent from that mount path.
-otel_languages:
+# Built-in per-language injection strategy (source of truth): which image
+# ships the agent, where its artifacts live in that image, where they mount in
+# the target container, and the environment that activates the agent.
+#
+# Do NOT replace this wholesale to tweak one field — set only the keys you want
+# to change under `otel_languages` (below); they are DEEP-merged onto these, so
+# `activation` and the other defaults are never accidentally dropped.
+otel_language_defaults:
   python:
     image_component: "autoinstrumentation-python"
     source_path: "/autoinstrumentation"
@@ -64,6 +68,13 @@ otel_languages:
       DOTNET_ADDITIONAL_DEPS: "/otel-auto-instrumentation-dotnet/AdditionalDeps"
       DOTNET_SHARED_STORE: "/otel-auto-instrumentation-dotnet/store"
       OTEL_DOTNET_AUTO_HOME: "/otel-auto-instrumentation-dotnet"
+
+# Per-language overrides, DEEP-merged onto otel_language_defaults. Set only the
+# keys you want to change, e.g. to relocate the Python mount path:
+#   otel_languages:
+#     python:
+#       mount_path: /opt/otel-python
+otel_languages: {}
 
 # --- Target services --------------------------------------------------------
 # Which containers to instrument. `name` is the OTel service name and volume
