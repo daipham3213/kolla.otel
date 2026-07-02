@@ -34,7 +34,8 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_deployment_environment` | Optional `deployment.environment` attribute. |
 | `otel_image_registry` / `otel_image_version` | Agent image source/tag. |
 | `otel_instrument_services` | List of `{name, container_name, language}` targets. |
-| `otel_languages` | Per-language image, mount path and activation env. |
+| `otel_language_defaults` | Built-in per-language image, mount path and activation env (source of truth). |
+| `otel_languages` | Per-language **overrides**, deep-merged onto `otel_language_defaults` (set only the keys you change). |
 
 ## Caveats
 

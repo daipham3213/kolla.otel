@@ -13,6 +13,19 @@
       'otel_exporter_endpoint' is required. Set it in globals.yml or pass a
       config file to `kolla-ansible instrument --config`.
 
+- name: Validate every targeted service maps to a known language
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - item.language in otel_language_defaults
+    fail_msg: >-
+      Service '{{ item.name }}' uses unknown language '{{ item.language }}'.
+      Known languages: {{ otel_language_defaults.keys() | list | join(', ') }}.
+      Add it under 'otel_languages' or fix the 'language' field.
+  loop: "{{ otel_instrument_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: Compute deployment-wide resource attributes
   ansible.builtin.set_fact:
     otel_resource_attributes_base: >-
