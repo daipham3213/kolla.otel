@@ -79,9 +79,16 @@
              'OTEL_RESOURCE_ATTRIBUTES': otel_ra_string,
            })
          | combine(otel_lang.activation) }}
+    # Drop any existing bind whose destination is our mount_path (e.g. a mount
+    # left by an earlier run — named volume or host path) before adding ours,
+    # so the recreate never hits "Duplicate mount point".
     otel_new_volumes: >-
       {{ (otel_attrs.HostConfig.Binds | default([]))
-         | union([otel_host_lib_dir ~ ':' ~ otel_lang.mount_path ~ ':ro']) }}
+         | reject('match',
+                  '^[^:]+:' ~ (otel_lang.mount_path | regex_escape)
+                  ~ '(:.*)?$')
+         | list
+         + [otel_host_lib_dir ~ ':' ~ otel_lang.mount_path ~ ':ro'] }}
 
 # Docker reports healthcheck durations in nanoseconds; kolla's
 # parse_healthcheck expects seconds and every key present, so convert here.
