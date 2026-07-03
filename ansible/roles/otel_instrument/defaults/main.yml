@@ -36,6 +36,10 @@ otel_image_version: "latest"
 # subdirectory, e.g. /etc/kolla/opentelemetry/python.
 otel_host_lib_path: "/etc/kolla/opentelemetry"
 
+# Container label used to record which environment keys this role injected, so
+# the next run can prune any that were removed from config (declarative env).
+otel_managed_env_label: "kolla_otel.managed_env"
+
 # Built-in per-language injection strategy (source of truth): which image
 # ships the agent, where its artifacts live in that image, where they mount in
 # the target container, and the environment that activates the agent.

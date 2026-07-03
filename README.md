@@ -25,11 +25,13 @@ role), which for each target container **present on a host**:
    **recreates it** (`kolla_container`) with that host path **bind-mounted**
    read-only plus the activation environment (`PYTHONPATH`,
    `JAVA_TOOL_OPTIONS`, `NODE_OPTIONS`, CoreCLR hooks) and the standard
-   `OTEL_*` export/resource variables merged on top of the existing
-   environment.
+   `OTEL_*` export/resource variables.
 
-Only containers already present are touched, so a run is safe across
-controllers and compute nodes and is idempotent on re-run.
+The injected env is **declarative**: the managed keys are recorded in a
+container label, so removing a variable from config removes it from the
+container on the next run (rather than lingering). Only containers already
+present are touched, so a run is safe across controllers and compute nodes and
+is idempotent on re-run.
 
 Target services (nova-api, nova-conductor, nova-compute, cinder-api,
 cinder-volume, keystone, glance-api, neutron-server, …) and all settings are

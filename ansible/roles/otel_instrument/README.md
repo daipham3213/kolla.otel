@@ -21,13 +21,27 @@ of the operator's Kubernetes init-container pattern.
      `mount_path`;
    - the `OTEL_*` export/resource variables and the language activation
      variables (`PYTHONPATH`, `JAVA_TOOL_OPTIONS`, `NODE_OPTIONS`, CoreCLR
-     hooks) merged on top of the existing environment.
+     hooks).
+
+### Declarative environment
+
+The injected environment is **declarative**, not additive. The role records
+the set of env keys it manages in a container label
+(`otel_managed_env_label`, default `kolla_otel.managed_env`). On each run it:
+
+1. reads that label to learn which keys it set last time,
+2. strips those keys (and the ones it is about to set) from the container's
+   current env — leaving the base image / kolla env untouched,
+3. applies the currently-desired managed set and rewrites the label.
+
+So **removing a variable from config removes it from the container** on the
+next run, instead of the old value lingering forever.
 
 Only containers that already exist on a host are touched, so a single run is
 safe across controllers and compute nodes. The step is idempotent: a second
-run pulls the image, finds the recorded image id unchanged and the env already
-present, and makes no change. Bumping `otel_image_version` (or a moved tag)
-re-stages the agent and recreates the affected containers on the next run.
+run with unchanged config pulls the image, finds the recorded image id and the
+managed env unchanged, and makes no change. Bumping `otel_image_version` (or a
+moved tag) re-stages the agent and recreates the affected containers.
 
 ## Key variables
 
@@ -41,6 +55,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_image_registry` / `otel_image_version` | Agent image source/tag. |
 | `otel_host_lib_path` | Host base dir the agent is staged into (default `/etc/kolla/opentelemetry`). |
 | `otel_extra_environment` | Extra env applied to **every** service (map). |
+| `otel_managed_env_label` | Container label recording managed env keys (default `kolla_otel.managed_env`). |
 | `otel_instrument_services` | List of `{name, container_name, language}` targets; each entry also accepts optional `otel_service_name`, `resource_attributes` and `environment` (per-service extra env). |
 | `otel_language_defaults` | Built-in per-language image, mount path and activation env (source of truth). |
 | `otel_languages` | Per-language **overrides**, deep-merged onto `otel_language_defaults` (set only the keys you change). |

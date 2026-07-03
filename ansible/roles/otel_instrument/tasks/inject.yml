@@ -28,15 +28,14 @@
          | zip(otel_ra_sorted | map(attribute='value'))
          | map('join', '=') | join(',') }}
 
-- name: "OTel | Build environment and volumes | {{ otel_service.name }}"
-  ansible.builtin.set_fact:
-    # Layered lowest -> highest precedence: existing container env, the common
-    # OTEL_* export vars, deployment-wide extra env, this service's identity,
-    # this service's own extra env, and finally the language activation (kept
-    # last so it can never be clobbered and the agent always loads).
-    otel_new_environment: >-
-      {{ otel_current_env
-         | combine(otel_common_environment)
+- name: "OTel | Build environment, labels and volumes | {{ otel_service.name }}"
+  vars:
+    # The full set of env this role manages for this service this run. Layered
+    # lowest -> highest: common OTEL_* export vars, deployment-wide extra env,
+    # this service's identity, its own extra env, and language activation last
+    # (so it can never be clobbered and the agent always loads).
+    otel_managed_env: >-
+      {{ otel_common_environment
          | combine(otel_extra_environment)
          | combine({
              'OTEL_SERVICE_NAME':
@@ -45,6 +44,28 @@
            })
          | combine(otel_service.environment | default({}))
          | combine(otel_lang.activation) }}
+    # Keys we injected on a previous run, recorded in a container label. Any of
+    # these that are no longer managed must be dropped, so removing a var from
+    # config actually removes it from the container (declarative env).
+    otel_prev_keys: >-
+      {{ ((otel_attrs.Config.Labels | default({}))
+          .get(otel_managed_env_label, '')).split(',') | select | list }}
+    otel_drop_keys: >-
+      {{ (otel_prev_keys + (otel_managed_env.keys() | list)) | unique }}
+  ansible.builtin.set_fact:
+    # Start from the container's current env with every managed/previously
+    # managed key removed (base image + kolla env preserved), then apply the
+    # desired managed set. Stale keys simply never get re-added.
+    otel_new_environment: >-
+      {{ (otel_current_env | dict2items
+          | rejectattr('key', 'in', otel_drop_keys) | items2dict)
+         | combine(otel_managed_env) }}
+    # Record the managed keys (merged with the container's existing labels) so
+    # the next run can prune anything removed from config.
+    otel_new_labels: >-
+      {{ (otel_attrs.Config.Labels | default({}))
+         | combine({otel_managed_env_label:
+                    otel_managed_env.keys() | list | sort | join(',')}) }}
     # Drop any existing bind whose destination is our mount_path (e.g. a mount
     # left by an earlier run — named volume or host path) before adding ours,
     # so the recreate never hits "Duplicate mount point".
@@ -85,6 +106,7 @@
     name: "{{ otel_service.container_name }}"
     image: "{{ otel_attrs.Config.Image }}"
     environment: "{{ otel_new_environment }}"
+    labels: "{{ otel_new_labels }}"
     volumes: "{{ otel_new_volumes }}"
     privileged: "{{ otel_attrs.HostConfig.Privileged | default(false) }}"
     pid_mode: >-
