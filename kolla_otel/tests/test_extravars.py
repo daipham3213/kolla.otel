@@ -59,6 +59,7 @@ def test_to_extra_vars_builds_service_entries() -> None:
         _spec(name="nova-api"),
         _spec(name="keystone", otel_service_name="identity"),
         _spec(name="cinder-api", resource_attributes={"tier": "block"}),
+        _spec(name="glance-api", environment={"OTEL_LOG_LEVEL": "debug"}),
     ]
     services = to_extra_vars(
         OTelConfig(exporter_endpoint="http://c:4317"), specs
@@ -71,6 +72,7 @@ def test_to_extra_vars_builds_service_entries() -> None:
     }
     assert services[1]["otel_service_name"] == "identity"
     assert services[2]["resource_attributes"] == {"tier": "block"}
+    assert services[3]["environment"] == {"OTEL_LOG_LEVEL": "debug"}
 
 
 def test_to_extra_vars_skips_disabled_specs() -> None:

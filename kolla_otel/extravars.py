@@ -74,6 +74,8 @@ def to_extra_vars(
             entry["otel_service_name"] = spec.otel_service_name
         if spec.resource_attributes:
             entry["resource_attributes"] = dict(spec.resource_attributes)
+        if spec.environment:
+            entry["environment"] = dict(spec.environment)
         services.append(entry)
     extra_vars["otel_instrument_services"] = services
 

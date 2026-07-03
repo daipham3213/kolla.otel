@@ -30,6 +30,16 @@ otel_resource_attributes_extra: {}
 otel_image_registry: "ghcr.io/open-telemetry/opentelemetry-operator"
 otel_image_version: "latest"
 
+# --- Agent staging ----------------------------------------------------------
+# The agent is copied out of the image into a host directory and bind-mounted
+# read-only into the service containers. Artifacts live under a per-language
+# subdirectory, e.g. /etc/kolla/opentelemetry/python.
+otel_host_lib_path: "/etc/kolla/opentelemetry"
+
+# Container label used to record which environment keys this role injected, so
+# the next run can prune any that were removed from config (declarative env).
+otel_managed_env_label: "kolla_otel.managed_env"
+
 # Built-in per-language injection strategy (source of truth): which image
 # ships the agent, where its artifacts live in that image, where they mount in
 # the target container, and the environment that activates the agent.
@@ -82,8 +92,17 @@ otel_languages: {}
 # containers actually present on a host are touched, so the same list is safe
 # across controllers and compute nodes.
 #
-# `otel_service_name` (optional) overrides OTEL_SERVICE_NAME; add a per-service
-# `resource_attributes` mapping to layer extra attributes.
+# Optional per-service keys:
+#   otel_service_name    - override OTEL_SERVICE_NAME
+#   resource_attributes  - extra OTEL_RESOURCE_ATTRIBUTES (map)
+#   environment          - extra environment variables for just this service
+#                          (map), e.g. tune sampling only for nova-api:
+#     - name: nova-api
+#       container_name: nova_api
+#       language: python
+#       environment:
+#         OTEL_TRACES_SAMPLER_ARG: "0.1"
+#         OTEL_PYTHON_LOG_CORRELATION: "true"
 otel_instrument_services:
   # Nova
   - {name: nova-api, container_name: nova_api, language: python}
@@ -104,6 +123,10 @@ otel_instrument_services:
   - {name: placement-api, container_name: placement_api, language: python}
   - {name: heat-api, container_name: heat_api, language: python}
   - {name: heat-engine, container_name: heat_engine, language: python}
+
+# Extra environment variables applied to every instrumented service, layered
+# above otel_common_environment and below each service's own `environment`.
+otel_extra_environment: {}
 
 # Common OTEL_* environment shared by every instrumented service. Per-service
 # identity (OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES) is added in tasks.

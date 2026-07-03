@@ -1,6 +1,7 @@
 ---
-# Injects one service. Included per target container from tasks/main.yml with
-# `otel_service` set. Runs only for containers already confirmed present.
+# Injects one service. Included per present container from main.yml with
+# `otel_service` set. The agent has already been staged to the host by
+# stage.yml, so this only builds the merged spec and recreates the container.
 
 - name: "OTel | Resolve language and derived values | {{ otel_service.name }}"
   ansible.builtin.set_fact:
@@ -12,53 +13,8 @@
                    recursive=True) }}
     otel_attrs: "{{ otel_container_facts.containers[otel_service.container_name] }}"
     otel_current_env: "{{ otel_env_facts.envs[otel_service.container_name] | default({}) }}"
-    otel_volume_name: >-
-      otel_auto_instrumentation_{{ otel_service.name
-        | lower | regex_replace('[^a-z0-9_.-]+', '-') }}_{{ otel_service.language }}
-
-- name: "OTel | Resolve agent image | {{ otel_service.name }}"
-  ansible.builtin.set_fact:
-    otel_agent_image: >-
-      {{ otel_image_registry | regex_replace('/$', '') }}/{{
-         otel_lang.image_component }}:{{ otel_image_version }}
-
-# --- Stage the agent artifacts into a named volume (once) ------------------
-- name: "OTel | Check whether the agent volume exists | {{ otel_service.name }}"
-  become: true
-  kolla_container_facts:
-    container_engine: "{{ kolla_container_engine }}"
-    action: get_volumes
-    name: "{{ otel_volume_name }}"
-  register: otel_volume_facts
-
-- name: "OTel | Create and populate the agent volume | {{ otel_service.name }}"
-  when: otel_volume_name not in otel_volume_facts.volumes
-  become: true
-  block:
-    - name: "OTel | Create agent volume | {{ otel_service.name }}"
-      ansible.builtin.command:
-        argv:
-          - "{{ kolla_container_engine }}"
-          - volume
-          - create
-          - "{{ otel_volume_name }}"
-      changed_when: true
-
-    - name: "OTel | Copy agent from image into volume | {{ otel_service.name }}"
-      ansible.builtin.command:
-        argv:
-          - "{{ kolla_container_engine }}"
-          - run
-          - "--rm"
-          - "--entrypoint"
-          - cp
-          - "--volume"
-          - "{{ otel_volume_name }}:/otel-dst"
-          - "{{ otel_agent_image }}"
-          - "-a"
-          - "{{ otel_lang.source_path | regex_replace('/$', '') }}/."
-          - "/otel-dst/"
-      changed_when: true
+    # Host directory staged by stage.yml and bind-mounted into the container.
+    otel_host_lib_dir: "{{ otel_host_lib_path }}/{{ otel_service.language }}"
 
 - name: "OTel | Compute resource attributes | {{ otel_service.name }}"
   vars:
@@ -72,20 +28,54 @@
          | zip(otel_ra_sorted | map(attribute='value'))
          | map('join', '=') | join(',') }}
 
-- name: "OTel | Build environment and volumes | {{ otel_service.name }}"
-  ansible.builtin.set_fact:
-    otel_new_environment: >-
-      {{ otel_current_env
-         | combine(otel_common_environment)
+- name: "OTel | Build environment, labels and volumes | {{ otel_service.name }}"
+  vars:
+    # The full set of env this role manages for this service this run. Layered
+    # lowest -> highest: common OTEL_* export vars, deployment-wide extra env,
+    # this service's identity, its own extra env, and language activation last
+    # (so it can never be clobbered and the agent always loads).
+    otel_managed_env: >-
+      {{ otel_common_environment
+         | combine(otel_extra_environment)
          | combine({
              'OTEL_SERVICE_NAME':
                otel_service.otel_service_name | default(otel_service.name),
              'OTEL_RESOURCE_ATTRIBUTES': otel_ra_string,
            })
+         | combine(otel_service.environment | default({}))
          | combine(otel_lang.activation) }}
+    # Keys we injected on a previous run, recorded in a container label. Any of
+    # these that are no longer managed must be dropped, so removing a var from
+    # config actually removes it from the container (declarative env).
+    otel_prev_keys: >-
+      {{ ((otel_attrs.Config.Labels | default({}))
+          .get(otel_managed_env_label, '')).split(',') | select | list }}
+    otel_drop_keys: >-
+      {{ (otel_prev_keys + (otel_managed_env.keys() | list)) | unique }}
+  ansible.builtin.set_fact:
+    # Start from the container's current env with every managed/previously
+    # managed key removed (base image + kolla env preserved), then apply the
+    # desired managed set. Stale keys simply never get re-added.
+    otel_new_environment: >-
+      {{ (otel_current_env | dict2items
+          | rejectattr('key', 'in', otel_drop_keys) | items2dict)
+         | combine(otel_managed_env) }}
+    # Record the managed keys (merged with the container's existing labels) so
+    # the next run can prune anything removed from config.
+    otel_new_labels: >-
+      {{ (otel_attrs.Config.Labels | default({}))
+         | combine({otel_managed_env_label:
+                    otel_managed_env.keys() | list | sort | join(',')}) }}
+    # Drop any existing bind whose destination is our mount_path (e.g. a mount
+    # left by an earlier run — named volume or host path) before adding ours,
+    # so the recreate never hits "Duplicate mount point".
     otel_new_volumes: >-
       {{ (otel_attrs.HostConfig.Binds | default([]))
-         | union([otel_volume_name ~ ':' ~ otel_lang.mount_path ~ ':ro']) }}
+         | reject('match',
+                  '^[^:]+:' ~ (otel_lang.mount_path | regex_escape)
+                  ~ '(:.*)?$')
+         | list
+         + [otel_host_lib_dir ~ ':' ~ otel_lang.mount_path ~ ':ro'] }}
 
 # Docker reports healthcheck durations in nanoseconds; kolla's
 # parse_healthcheck expects seconds and every key present, so convert here.
@@ -116,6 +106,7 @@
     name: "{{ otel_service.container_name }}"
     image: "{{ otel_attrs.Config.Image }}"
     environment: "{{ otel_new_environment }}"
+    labels: "{{ otel_new_labels }}"
     volumes: "{{ otel_new_volumes }}"
     privileged: "{{ otel_attrs.HostConfig.Privileged | default(false) }}"
     pid_mode: >-
