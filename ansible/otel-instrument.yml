@@ -6,9 +6,15 @@
 #
 # Targets every host by default and instruments only the containers actually
 # present there, so the same run is safe across controllers and compute nodes.
+#
+# Work is independent per host, so hosts run in parallel up to `forks`
+# (ansible.cfg). Set otel_instrument_strategy=free to let each host run the
+# whole play without waiting for the others at every task (faster when hosts
+# have very different container counts, e.g. controllers vs computes).
 - name: Apply OpenTelemetry auto-instrumentation to OpenStack containers
   hosts: "{{ otel_instrument_hosts | default('all') }}"
   gather_facts: false
+  strategy: "{{ otel_instrument_strategy | default('linear') }}"
   serial: "{{ kolla_serial | default('0') }}"
   max_fail_percentage: "{{ kolla_max_fail_percentage | default(100) }}"
   roles:

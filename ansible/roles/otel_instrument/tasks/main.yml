@@ -42,22 +42,36 @@
     name: "{{ otel_instrument_services | map(attribute='container_name') | list }}"
   register: otel_container_facts
 
+- name: Select the target services present on this host
+  ansible.builtin.set_fact:
+    otel_present_services: >-
+      {{ otel_instrument_services
+         | selectattr('container_name', 'in',
+                      otel_container_facts.containers.keys() | list)
+         | list }}
+
 - name: Gather current environment of the present containers
   become: true
   kolla_container_facts:
     container_engine: "{{ kolla_container_engine }}"
     action: get_containers_env
-    name: "{{ otel_container_facts.containers.keys() | list }}"
+    name: "{{ otel_present_services | map(attribute='container_name') | list }}"
   register: otel_env_facts
-  when: otel_container_facts.containers | length > 0
+  when: otel_present_services | length > 0
+
+# Stage each distinct language once (pull + copy), rather than repeating the
+# per-language work inside the per-service loop below.
+- name: Stage the agent for each language present on this host
+  ansible.builtin.include_tasks: stage.yml
+  loop: >-
+    {{ otel_present_services | map(attribute='language') | unique | list }}
+  loop_control:
+    loop_var: otel_stage_language
+    label: "{{ otel_stage_language }}"
 
 - name: Inject OpenTelemetry into each present container
   ansible.builtin.include_tasks: inject.yml
-  loop: >-
-    {{ otel_instrument_services
-       | selectattr('container_name', 'in',
-                    otel_container_facts.containers.keys() | list)
-       | list }}
+  loop: "{{ otel_present_services }}"
   loop_control:
     loop_var: otel_service
     label: "{{ otel_service.name }} ({{ otel_service.container_name }})"

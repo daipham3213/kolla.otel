@@ -1,0 +1,98 @@
+---
+# Stage one language's agent into its host directory, once per host. Included
+# from main.yml with `otel_stage_language` set to a language present on the
+# host. The agent is (re)copied only when the pulled image id differs from the
+# recorded marker, so unchanged images are a no-op.
+
+- name: "OTel stage | Resolve language and paths | {{ otel_stage_language }}"
+  ansible.builtin.set_fact:
+    # Deep-merge any user override onto the built-in language definition so a
+    # partial `otel_languages` override never drops `activation` etc.
+    otel_stage_lang: >-
+      {{ otel_language_defaults[otel_stage_language] | default({})
+         | combine(otel_languages[otel_stage_language] | default({}),
+                   recursive=True) }}
+    otel_stage_dir: "{{ otel_host_lib_path }}/{{ otel_stage_language }}"
+    otel_stage_marker: "{{ otel_host_lib_path }}/.{{ otel_stage_language }}-image-id"
+
+- name: "OTel stage | Resolve agent image | {{ otel_stage_language }}"
+  ansible.builtin.set_fact:
+    otel_stage_image: >-
+      {{ otel_image_registry | regex_replace('/$', '') }}/{{
+         otel_stage_lang.image_component }}:{{ otel_image_version }}
+
+- name: "OTel stage | Ensure host library directory exists | {{ otel_stage_language }}"
+  become: true
+  ansible.builtin.file:
+    path: "{{ otel_stage_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: "OTel stage | Pull agent image | {{ otel_stage_language }}"
+  become: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kolla_container_engine }}"
+      - pull
+      - "{{ otel_stage_image }}"
+  register: otel_pull
+  changed_when: >-
+    'Downloaded newer image' in otel_pull.stdout
+    or 'Writing manifest' in otel_pull.stdout
+
+- name: "OTel stage | Inspect the pulled image id | {{ otel_stage_language }}"
+  become: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kolla_container_engine }}"
+      - image
+      - inspect
+      - "--format"
+      - "{{ '{{ .Id }}' }}"
+      - "{{ otel_stage_image }}"
+  register: otel_image_id
+  changed_when: false
+
+- name: "OTel stage | Read the staged image marker | {{ otel_stage_language }}"
+  become: true
+  ansible.builtin.slurp:
+    src: "{{ otel_stage_marker }}"
+  register: otel_marker
+  failed_when: false
+
+- name: "OTel stage | Refresh the staged agent when the image changed | {{ otel_stage_language }}"
+  when: >-
+    otel_marker.content is not defined
+    or (otel_marker.content | b64decode | trim) != (otel_image_id.stdout | trim)
+  become: true
+  block:
+    - name: "OTel stage | Empty the host library directory | {{ otel_stage_language }}"
+      ansible.builtin.file:
+        path: "{{ otel_stage_dir }}"
+        state: "{{ item }}"
+        mode: "0755"
+      loop:
+        - absent
+        - directory
+
+    - name: "OTel stage | Copy agent from image into host path | {{ otel_stage_language }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ kolla_container_engine }}"
+          - run
+          - "--rm"
+          - "--entrypoint"
+          - cp
+          - "--volume"
+          - "{{ otel_stage_dir }}:/otel-dst"
+          - "{{ otel_stage_image }}"
+          - "-a"
+          - "{{ otel_stage_lang.source_path | regex_replace('/$', '') }}/."
+          - "/otel-dst/"
+      changed_when: true
+
+    - name: "OTel stage | Record the staged image id | {{ otel_stage_language }}"
+      ansible.builtin.copy:
+        dest: "{{ otel_stage_marker }}"
+        content: "{{ otel_image_id.stdout | trim }}\n"
+        mode: "0644"
