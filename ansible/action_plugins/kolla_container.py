@@ -97,8 +97,18 @@ class ActionModule(ActionBase):
         return self._resolve(task_vars.get(name))
 
     def _maybe_instrument(self, module_args, task_vars):
-        """Return ``module_args`` augmented with OTEL iff every gate passes."""
+        """Return ``module_args`` augmented with OTEL iff every gate passes.
+
+        Every gate that declines logs the reason at -vvv, prefixed ``otel:``
+        and tagged with the container name, so a passthrough is diagnosable:
+        run any kolla-ansible command with -vvv and grep for ``otel:`` to see
+        exactly which gate stopped a given container from being instrumented.
+        """
         from ansible.module_utils.parsing.convert_bool import boolean
+
+        action = self._resolve(module_args.get("action"))
+        name = self._resolve(module_args.get("name"))
+        label = name or "<unnamed>"
 
         # Gate 1: explicit opt-in. Off by default so the plugin is a trivial
         # passthrough for everyone who has not enabled auto-instrumentation.
@@ -106,37 +116,58 @@ class ActionModule(ActionBase):
             self._var(task_vars, "otel_auto_instrument", False),
             strict=False,
         ):
+            display.vvv(
+                f"otel: '{label}': otel_auto_instrument not enabled "
+                "-> passthrough"
+            )
             return module_args
 
         from kolla_otel import instrumentation as instr
 
         # Gate 2: only the container-creating actions carry a spec to augment.
-        action = self._resolve(module_args.get("action"))
         if action not in instr.CREATE_ACTIONS:
+            display.vvv(
+                f"otel: '{label}': action '{action}' is not a create "
+                "action -> passthrough"
+            )
             return module_args
 
-        name = self._resolve(module_args.get("name"))
+        # Gate 3: the task must name a container.
         if not name:
+            display.vvv("otel: task has no container name -> passthrough")
             return module_args
 
-        # Gate 3: no exporter endpoint -> nothing to instrument.
+        # Gate 4: no exporter endpoint -> nothing to instrument.
         endpoint = str(
             self._var(task_vars, "otel_exporter_endpoint", "") or ""
         )
         if not endpoint:
+            display.vvv(
+                f"otel: '{label}': otel_exporter_endpoint not set "
+                "-> passthrough"
+            )
             return module_args
 
-        # Gate 4: this container must be a configured target.
+        # Gate 5: this container must be a configured target.
         services = self._var(task_vars, "otel_instrument_services", None)
         if services is None:
             services = instr.DEFAULT_SERVICES
         service = instr.find_service(services, name)
         if service is None:
+            display.vvv(
+                f"otel: '{label}': not in otel_instrument_services "
+                "-> passthrough"
+            )
             return module_args
 
+        # Gate 6: the target's language must be known.
         language = service.get("language")
         if language not in instr.LANGUAGE_DEFAULTS:
-            return module_args  # unknown language: skip rather than fail
+            display.vvv(
+                f"otel: '{label}': unknown language '{language}' "
+                "-> passthrough"
+            )
+            return module_args
 
         lang = instr.resolve_language(
             language, self._var(task_vars, "otel_languages", None)
