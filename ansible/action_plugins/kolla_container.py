@@ -43,10 +43,18 @@ dependency-free :mod:`kolla_otel.instrumentation`, the shared source of truth
 with the ``otel_instrument`` role.
 """
 
+import base64
+import json
+
 from ansible.plugins.action import ActionBase
 from ansible.utils.display import Display
 
 display = Display()
+
+# Per-process cache of ``(host, image)`` already staged successfully this run,
+# so the agent is pulled/copied at most once per language per host per play
+# instead of on every kolla_container task that touches it.
+_STAGED: set = set()
 
 # Emitted once, when Ansible loads this plugin (i.e. it is on the
 # action-plugin search path — normally because it was installed adjacent to
@@ -177,6 +185,24 @@ class ActionModule(ActionBase):
         lang = instr.resolve_language(
             language, self._var(task_vars, "otel_languages", None)
         )
+        host_lib_path = str(
+            self._var(
+                task_vars, "otel_host_lib_path", instr.DEFAULT_HOST_LIB_PATH
+            )
+        )
+
+        # Gate 7: the agent must be on the host before we mount it. Stage it
+        # (pull + copy-out) now, so a plain deploy/reconfigure produces a
+        # working instrumentation without a prior `otel-instrument` run. If
+        # staging cannot be guaranteed (failure, or check mode) do NOT
+        # instrument: mounting an empty dir and pointing PYTHONPATH /
+        # JAVA_TOOL_OPTIONS into it would break the service. Passing through
+        # leaves the container running as kolla intended.
+        if not self._stage_agent(task_vars, language, lang, host_lib_path):
+            display.vvv(
+                f"otel: '{name}': agent not staged on host -> passthrough"
+            )
+            return module_args
 
         # Build the managed OTEL_* environment for this service.
         common_env = {
@@ -197,13 +223,7 @@ class ActionModule(ActionBase):
             service.get("environment") or {},
             lang["activation"],
         )
-
-        host_lib_path = str(
-            self._var(
-                task_vars, "otel_host_lib_path", instr.DEFAULT_HOST_LIB_PATH
-            )
-        )
-        label = str(
+        env_label = str(
             self._var(
                 task_vars,
                 "otel_managed_env_label",
@@ -225,7 +245,7 @@ class ActionModule(ActionBase):
         )
 
         labels = dict(module_args.get("labels") or {})
-        labels[label] = instr.managed_label_value(managed)
+        labels[env_label] = instr.managed_label_value(managed)
         module_args["labels"] = labels
 
         if action == "compare_container":
@@ -240,3 +260,142 @@ class ActionModule(ActionBase):
                 f"otel: instrumented kolla_container '{name}' ({language})"
             )
         return module_args
+
+    # -- staging ---------------------------------------------------------
+
+    def _module(self, name, args, task_vars):
+        """Run a module on the target host and return its result dict."""
+        return self._execute_module(
+            module_name=name, module_args=args, task_vars=task_vars
+        )
+
+    @staticmethod
+    def _failed(result):
+        """True if a module result indicates failure (``failed`` or rc!=0)."""
+        return bool(result.get("failed")) or result.get("rc", 0) not in (
+            0,
+            None,
+        )
+
+    def _stage_agent(self, task_vars, language, lang, host_lib_path):
+        """Ensure the language's agent is staged on the target host.
+
+        Mirrors the role's ``stage.yml`` but driven from the plugin so a plain
+        ``deploy``/``reconfigure`` stages the agent before kolla (re)creates
+        the container: pull the image, and (re)copy its artifacts into
+        ``<host_lib_path>/<language>`` when the pulled image id differs from
+        the recorded marker. Idempotent and cached per (host, image) per run.
+
+        Returns True when the agent is present on the host, False otherwise
+        (a failure, or check mode) — the caller then declines to instrument.
+        """
+        # Never make changes during a dry run.
+        if self._task.check_mode:
+            display.vvv("otel: check mode -> not staging agent")
+            return False
+
+        from kolla_otel import instrumentation as instr
+
+        engine = str(
+            self._var(task_vars, "kolla_container_engine", "docker")
+            or "docker"
+        )
+        image = instr.agent_image(
+            self._var(
+                task_vars, "otel_image_registry", instr.DEFAULT_IMAGE_REGISTRY
+            ),
+            lang["image_component"],
+            self._var(
+                task_vars, "otel_image_version", instr.DEFAULT_IMAGE_VERSION
+            ),
+        )
+        stage_dir, marker = instr.stage_paths(host_lib_path, language)
+        host = task_vars.get("inventory_hostname", "")
+        cache_key = (host, image)
+        if cache_key in _STAGED:
+            return True
+
+        # Make sure the staging directory exists.
+        if self._failed(
+            self._module(
+                "file",
+                {"path": stage_dir, "state": "directory", "mode": "0755"},
+                task_vars,
+            )
+        ):
+            return False
+
+        # Pull the image (best effort: fall back to a locally present image so
+        # a transient registry outage does not tear down instrumentation).
+        pull = self._module(
+            "command", {"argv": [engine, "pull", image]}, task_vars
+        )
+        if self._failed(pull):
+            display.vvv(f"otel: pull of {image} failed; trying local image")
+
+        # Resolve the (local) image id; if unavailable, keep an existing stage.
+        inspect = self._module(
+            "command", {"argv": [engine, "inspect", image]}, task_vars
+        )
+        if self._failed(inspect):
+            existing = self._module("stat", {"path": marker}, task_vars)
+            if existing.get("stat", {}).get("exists"):
+                _STAGED.add(cache_key)
+                return True
+            display.warning(f"otel: agent image {image} unavailable on {host}")
+            return False
+        try:
+            image_id = json.loads(inspect["stdout"])[0]["Id"]
+        except (KeyError, ValueError, IndexError):
+            return False
+
+        # (Re)copy the agent only when the staged image id changed.
+        slurp = self._module("slurp", {"src": marker}, task_vars)
+        current = None
+        if not slurp.get("failed") and slurp.get("content"):
+            current = base64.b64decode(slurp["content"]).decode().strip()
+
+        if current != image_id:
+            # Empty the directory, then copy the agent out of the image.
+            self._module(
+                "file", {"path": stage_dir, "state": "absent"}, task_vars
+            )
+            self._module(
+                "file",
+                {"path": stage_dir, "state": "directory", "mode": "0755"},
+                task_vars,
+            )
+            source = lang["source_path"].rstrip("/")
+            copy = self._module(
+                "command",
+                {
+                    "argv": [
+                        engine,
+                        "run",
+                        "--rm",
+                        "--entrypoint",
+                        "cp",
+                        "--volume",
+                        f"{stage_dir}:/otel-dst",
+                        image,
+                        "-a",
+                        f"{source}/.",
+                        "/otel-dst/",
+                    ]
+                },
+                task_vars,
+            )
+            if self._failed(copy):
+                display.warning(
+                    f"otel: failed to copy agent from {image} on {host}"
+                )
+                return False
+            self._module(
+                "copy",
+                {"dest": marker, "content": image_id + "\n", "mode": "0644"},
+                task_vars,
+            )
+            display.vvv(f"otel: staged {image} -> {stage_dir} on {host}")
+
+        _STAGED.add(cache_key)
+        return True

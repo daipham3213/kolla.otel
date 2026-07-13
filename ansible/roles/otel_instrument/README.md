@@ -103,10 +103,16 @@ deliberately conservative:
 
 The overlay logic is shared with this role via the dependency-free
 `kolla_otel.instrumentation` module (a test keeps the Python copy of the
-defaults in sync with `defaults/main.yml`). The plugin injects the
-env/volume/label but **not the agent artifacts**: stage those once with
-`kolla-ansible otel-instrument` (which pulls the image and copies the agent to the
-host); the plugin then keeps the mount applied across deploys.
+defaults in sync with `defaults/main.yml`).
+
+**Agent staging is automatic.** Before it mounts the agent, the plugin stages
+it on the host itself — pulling the image and copying the artifacts into
+`otel_host_lib_path` (mirroring the role's `stage.yml`), once per language per
+host per run — so a plain `deploy`/`reconfigure` produces working
+instrumentation with no prior `otel-instrument` run. If staging cannot be
+completed (image pull/copy fails, or during `--check`) the plugin declines to
+instrument and passes the task through unchanged, so the service still starts
+rather than booting against an empty mount.
 
 ## Key variables
 

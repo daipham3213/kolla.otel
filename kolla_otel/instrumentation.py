@@ -32,11 +32,15 @@ __all__ = [
     "DEFAULT_SERVICES",
     "DEFAULT_HOST_LIB_PATH",
     "DEFAULT_MANAGED_ENV_LABEL",
+    "DEFAULT_IMAGE_REGISTRY",
+    "DEFAULT_IMAGE_VERSION",
     "deep_merge",
     "resolve_language",
     "resource_attributes",
     "resource_attributes_string",
     "managed_environment",
+    "agent_image",
+    "stage_paths",
     "agent_bind",
     "apply_agent_mount",
     "managed_label_value",
@@ -63,6 +67,11 @@ AUGMENT_ACTIONS = frozenset(
 
 DEFAULT_HOST_LIB_PATH = "/etc/kolla/opentelemetry"
 DEFAULT_MANAGED_ENV_LABEL = "kolla_otel.managed_env"
+
+#: Agent image source. Mirrors otel_image_registry / otel_image_version in the
+#: role defaults (kept in sync by test_instrumentation.py).
+DEFAULT_IMAGE_REGISTRY = "ghcr.io/open-telemetry/opentelemetry-operator"
+DEFAULT_IMAGE_VERSION = "latest"
 
 #: Per-language agent definition. Mirrors ``otel_language_defaults`` in the
 #: role's ``defaults/main.yml`` (kept in sync by test_instrumentation.py).
@@ -301,6 +310,27 @@ def managed_environment(
     env.update(service_env or {})
     env.update(activation or {})
     return env
+
+
+def agent_image(registry: str, component: str, version: str) -> str:
+    """Return the fully-qualified auto-instrumentation image reference.
+
+    Mirrors ``stage.yml``: ``<registry>/<image_component>:<version>`` with any
+    trailing slash on the registry stripped.
+    """
+    base = (registry or DEFAULT_IMAGE_REGISTRY).rstrip("/")
+    return f"{base}/{component}:{version or DEFAULT_IMAGE_VERSION}"
+
+
+def stage_paths(host_lib_path: str, language: str) -> tuple[str, str]:
+    """Return ``(stage_dir, marker_path)`` for a language on the host.
+
+    The agent artifacts live under ``<host_lib_path>/<language>`` and the
+    staged image id is recorded in ``<host_lib_path>/.<language>-image-id`` —
+    matching ``stage.yml`` so the role and the action plugin stage identically.
+    """
+    base = host_lib_path or DEFAULT_HOST_LIB_PATH
+    return f"{base}/{language}", f"{base}/.{language}-image-id"
 
 
 def agent_bind(host_lib_path: str, language: str, mount_path: str) -> str:

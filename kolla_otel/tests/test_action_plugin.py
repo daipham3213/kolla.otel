@@ -7,6 +7,7 @@ for targeted containers, and fails open (never raises out of ``run``).
 """
 
 import importlib.util
+import json
 import types
 from pathlib import Path
 
@@ -21,16 +22,17 @@ _PLUGIN_PATH = (
 )
 
 
-def _load_plugin_class():
+def _load_plugin_module():
     spec = importlib.util.spec_from_file_location(
         "otel_kolla_container_action", _PLUGIN_PATH
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.ActionModule
+    return module
 
 
-ActionModule = _load_plugin_class()
+_PLUGIN_MOD = _load_plugin_module()
+ActionModule = _PLUGIN_MOD.ActionModule
 
 
 class _Templar:
@@ -40,19 +42,45 @@ class _Templar:
         return value
 
 
-def _plugin(task_args, executed_sink):
+def _staging_result(module_name, module_args, stage_ok):
+    """Canned result for a host-side staging module call."""
+    if module_name == "command":
+        argv = module_args.get("argv", [])
+        if "inspect" in argv:
+            if not stage_ok:
+                return {"failed": True, "rc": 1}
+            return {"rc": 0, "stdout": json.dumps([{"Id": "sha256:test"}])}
+        return {"rc": 0}  # pull / run cp
+    if module_name == "stat":
+        return {"stat": {"exists": False}}
+    if module_name == "slurp":
+        return {"failed": True}  # marker absent -> triggers copy
+    return {"changed": True}  # file / copy
+
+
+def _plugin(task_args, executed_sink, stage_ok=True):
     """Build an ActionModule instance wired with test doubles."""
     plugin = ActionModule.__new__(ActionModule)
-    plugin._task = types.SimpleNamespace(args=dict(task_args))
+    plugin._task = types.SimpleNamespace(
+        args=dict(task_args), check_mode=False
+    )
     plugin._templar = _Templar()
 
     def _execute_module(module_name, module_args, task_vars):
-        executed_sink["module_name"] = module_name
-        executed_sink["args"] = module_args
-        return {"changed": False}
+        if module_name == "kolla_container":  # the delegated (final) call
+            executed_sink["module_name"] = module_name
+            executed_sink["args"] = module_args
+            return {"changed": False}
+        return _staging_result(module_name, module_args, stage_ok)
 
     plugin._execute_module = _execute_module
     return plugin
+
+
+@pytest.fixture(autouse=True)
+def _reset_stage_cache():
+    """The per-run staging cache is module-global; clear it between tests."""
+    _PLUGIN_MOD._STAGED.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -159,6 +187,46 @@ def test_custom_service_list_is_honored():
     env = sink["args"]["environment"]
     assert "JAVA_TOOL_OPTIONS" in env  # java activation
     assert env["OTEL_SERVICE_NAME"] == "svc"
+
+
+def test_staging_stages_agent_then_instruments():
+    """A target is staged (pull + copy) before the overlay is applied."""
+    calls = []
+    sink = {}
+    plugin = _plugin(_TARGET_ARGS, sink)
+    inner = plugin._execute_module
+
+    def _record(module_name, module_args, task_vars):
+        calls.append((module_name, module_args.get("argv")))
+        return inner(module_name, module_args, task_vars)
+
+    plugin._execute_module = _record
+    plugin.run(task_vars=dict(_ENABLED))
+
+    # The agent image was pulled and copied out before delegation.
+    commands = [argv for n, argv in calls if n == "command"]
+    assert any(c[:2] == ["docker", "pull"] for c in commands)
+    assert any("cp" in c for c in commands)
+    # ...and the container was then instrumented.
+    assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+
+def test_staging_failure_is_passthrough():
+    """If the agent cannot be staged, the container is left uninstrumented
+    (mounting an empty dir would break the service)."""
+    sink = {}
+    _plugin(_TARGET_ARGS, sink, stage_ok=False).run(task_vars=dict(_ENABLED))
+    assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+    assert "OTEL_SERVICE_NAME" not in (sink["args"].get("environment") or {})
+
+
+def test_check_mode_is_passthrough():
+    """No staging (and so no instrumentation) during a dry run."""
+    sink = {}
+    plugin = _plugin(_TARGET_ARGS, sink)
+    plugin._task.check_mode = True
+    plugin.run(task_vars=dict(_ENABLED))
+    assert "kolla_otel.managed_env" not in sink["args"]["labels"]
 
 
 def test_fails_open_on_error(monkeypatch):

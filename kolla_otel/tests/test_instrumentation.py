@@ -59,7 +59,34 @@ def test_scalar_defaults_match_role() -> None:
         assert str(role[var]) == default
 
 
+def test_image_defaults_match_role() -> None:
+    """Agent image registry/version defaults match the role."""
+    role = _role_defaults()
+    assert role["otel_image_registry"] == instr.DEFAULT_IMAGE_REGISTRY
+    assert str(role["otel_image_version"]) == instr.DEFAULT_IMAGE_VERSION
+
+
 # --- overlay logic ----------------------------------------------------------
+
+
+def test_agent_image_and_stage_paths() -> None:
+    assert (
+        instr.agent_image(
+            "ghcr.io/open-telemetry/opentelemetry-operator/",
+            "autoinstrumentation-python",
+            "0.50b0",
+        )
+        == "ghcr.io/open-telemetry/opentelemetry-operator/"
+        "autoinstrumentation-python:0.50b0"
+    )
+    # falsy registry/version fall back to the defaults
+    assert instr.agent_image("", "c", "") == (
+        f"{instr.DEFAULT_IMAGE_REGISTRY}/c:{instr.DEFAULT_IMAGE_VERSION}"
+    )
+    assert instr.stage_paths("/etc/kolla/opentelemetry", "python") == (
+        "/etc/kolla/opentelemetry/python",
+        "/etc/kolla/opentelemetry/.python-image-id",
+    )
 
 
 def test_deep_merge_is_recursive_and_pure() -> None:
