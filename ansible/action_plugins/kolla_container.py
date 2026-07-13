@@ -45,6 +45,15 @@ from ansible.utils.display import Display
 
 display = Display()
 
+# Emitted once, when Ansible loads this plugin (i.e. it is on the
+# action-plugin search path — normally because it was installed adjacent to
+# kolla's site.yml). Run any kolla-ansible command with -vvv and grep for this
+# line to confirm the plugin is actually loaded; its absence means the
+# package's shared-data did not land next to the playbooks (e.g. an editable
+# install, or a different prefix from kolla-ansible) and instrumentation can
+# never be re-applied.
+display.vvv("otel: kolla_container action plugin loaded")
+
 
 class ActionModule(ActionBase):
     """Augment container-creating ``kolla_container`` tasks with OTEL."""
