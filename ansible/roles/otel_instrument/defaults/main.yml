@@ -22,6 +22,17 @@ otel_action: "instrument"
 # them). Set to false to keep them for a quick re-instrument.
 otel_rollback_remove_agent: true
 
+# Master switch for the bundled `kolla_container` action plugin, which
+# re-applies instrumentation whenever kolla itself (re)creates a container
+# during `deploy` / `reconfigure` — so instrumentation persists without a
+# re-run. It is OFF by default and only ever fires when this is truthy AND
+# `otel_exporter_endpoint` is set; otherwise every kolla_container task is
+# passed through untouched. Set this (and the otel_* config) in globals.yml to
+# make instrumentation survive native deploy/reconfigure. The agent must still
+# be staged first with a `kolla-ansible otel-instrument` run — the plugin injects
+# the mount/env/label, not the agent artifacts themselves.
+otel_auto_instrument: false
+
 # --- OTLP export configuration ---------------------------------------------
 # The collector endpoint reachable from inside the service containers.
 otel_exporter_endpoint: ""            # REQUIRED, e.g. http://otel-collector:4317

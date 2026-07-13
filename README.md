@@ -91,6 +91,15 @@ kolla-ansible otel-rollback -i /etc/kolla/inventory \
     --config examples/instrumentation.yml
 ```
 
+### Persisting across deploy/reconfigure
+
+A subsequent `kolla-ansible deploy`/`reconfigure` recreates services from
+kolla's own definitions and drops the injected env/volume. To re-apply it
+automatically, enable the bundled `kolla_container` action plugin by setting
+`otel_auto_instrument: true` (alongside the `otel_*` config) in `globals.yml`.
+It is off by default and only ever augments the targeted containers; see the
+[role README](ansible/roles/otel_instrument/README.md) for details.
+
 ## Ansible content
 
 Playbooks and roles placed under [`ansible/`](ansible/) are shipped into
@@ -148,8 +157,10 @@ The injection logic lives in Ansible; the Python package is a thin driver.
 | --- | --- |
 | `ansible/roles/otel_instrument` | Stages the agent and recreates each container with the OTel env/volume; also rolls it back (see its [README](ansible/roles/otel_instrument/README.md)) |
 | `ansible/otel-instrument.yml` / `ansible/otel-rollback.yml` | Playbooks run by the two commands |
+| `ansible/action_plugins/kolla_container.py` | Optional wrapper re-applying instrumentation on every kolla container (re)create |
 | `kolla_otel.config` | Validated configuration model + loader |
 | `kolla_otel.extravars` | Translates the config model into the role's `otel_*` variables |
+| `kolla_otel.instrumentation` | Shared, dependency-free overlay logic used by the action plugin |
 | `kolla_otel.cli` | The `cliff` commands (`otel-instrument` / `otel-rollback`) that run the playbooks |
 
 `config` and `extravars` have **no third-party dependencies** and are unit

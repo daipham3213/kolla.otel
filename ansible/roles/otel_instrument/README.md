@@ -70,6 +70,40 @@ Rollback is **idempotent**: a container with no managed label, no agent mount
 and no managed env keys is left untouched, so a second run (or rolling back a
 never-instrumented container) is a no-op.
 
+## Persisting across `deploy` / `reconfigure` (auto-instrument)
+
+By default a subsequent `kolla-ansible deploy`/`reconfigure` recreates
+services from kolla's own definitions and drops the injected env/volume (see
+Caveats). To make instrumentation **survive those operations automatically**,
+this package ships a `kolla_container` **action plugin**
+([`ansible/action_plugins/kolla_container.py`](../../action_plugins/kolla_container.py)),
+installed next to kolla's `site.yml`, so Ansible auto-loads it as the action
+for every `kolla_container` task — the Ansible analogue of the
+opentelemetry-operator's mutating admission webhook. Whenever kolla
+(re)creates a targeted container it re-applies the OTEL env, agent bind-mount
+and managed-env label.
+
+Because it sits in the path of *every* `kolla_container` task, it is
+deliberately conservative:
+
+- **Off by default.** It does nothing unless `otel_auto_instrument: true`
+  **and** `otel_exporter_endpoint` is set (put both, and the rest of the
+  `otel_*` config, in `globals.yml`). Otherwise it is a one-lookup
+  passthrough.
+- **Narrow scope.** It only augments the two container-creating actions
+  (`start_container`, `recreate_or_restart_container`) and only for containers
+  in `otel_instrument_services`. Every other task is passed through untouched.
+- **Fails open.** Any error while computing the overlay is logged as a warning
+  and the original task runs unmodified — instrumentation is best effort and
+  never breaks a deploy.
+
+The overlay logic is shared with this role via the dependency-free
+`kolla_otel.instrumentation` module (a test keeps the Python copy of the
+defaults in sync with `defaults/main.yml`). The plugin injects the
+env/volume/label but **not the agent artifacts**: stage those once with
+`kolla-ansible otel-instrument` (which pulls the image and copies the agent to the
+host); the plugin then keeps the mount applied across deploys.
+
 ## Key variables
 
 See [`defaults/main.yml`](defaults/main.yml). The essentials:
@@ -78,6 +112,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | --- | --- |
 | `otel_action` | `instrument` (default) or `rollback`. |
 | `otel_rollback_remove_agent` | On rollback, also delete staged agent artifacts from the host (default `true`). |
+| `otel_auto_instrument` | Enable the `kolla_container` action plugin so instrumentation persists across `deploy`/`reconfigure` (default `false`). |
 | `otel_exporter_endpoint` | **Required** (for `instrument`). OTLP collector endpoint. |
 | `otel_exporter_protocol` | `grpc` (default) or `http/protobuf`. |
 | `otel_deployment_environment` | Optional `deployment.environment` attribute. |
@@ -93,8 +128,9 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 
 - **Kolla owns the container spec.** A subsequent `kolla-ansible deploy`/
   `reconfigure` recreates services from kolla's own definitions and will drop
-  the injected env/volume. Re-run `kolla-ansible otel-instrument` afterwards (or
-  fold the settings into kolla via a pull request) to reapply.
+  the injected env/volume. Re-run `kolla-ansible otel-instrument` afterwards, enable
+  the auto-instrument action plugin (see *Persisting across deploy/reconfigure*
+  above), or fold the settings into kolla via a pull request to reapply.
 - Custom `dimensions` (ulimits/memory limits) are **not** reconstructed on
   recreate; healthcheck, privileged, pid/ipc mode and capabilities are.
 

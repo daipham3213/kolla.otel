@@ -7,6 +7,10 @@
 # each container back to its pre-instrumentation state, idempotently):
 #     kolla-ansible otel-rollback --config examples/instrumentation.yml
 #
+# To keep instrumentation applied across `kolla-ansible deploy`/`reconfigure`,
+# set `otel_auto_instrument: true` (with the otel_* config) in globals.yml;
+# see the otel_instrument role README.
+#
 otel:
   # OTLP collector reachable from the OpenStack service containers.
   exporter_endpoint: http://otel-collector.observability.svc:4317
