@@ -90,9 +90,13 @@ deliberately conservative:
   **and** `otel_exporter_endpoint` is set (put both, and the rest of the
   `otel_*` config, in `globals.yml`). Otherwise it is a one-lookup
   passthrough.
-- **Narrow scope.** It only augments the two container-creating actions
-  (`start_container`, `recreate_or_restart_container`) and only for containers
-  in `otel_instrument_services`. Every other task is passed through untouched.
+- **Narrow scope.** It only augments the create/compare actions
+  (`start_container`, `recreate_or_restart_container`, `compare_container`)
+  and only for containers in `otel_instrument_services`. Every other task is
+  passed through untouched. Augmenting `compare_container` is what makes kolla
+  notice missing instrumentation on `deploy`/`reconfigure` and fire its own
+  recreate handler; once instrumented the comparison matches, so nothing is
+  recreated needlessly.
 - **Fails open.** Any error while computing the overlay is logged as a warning
   and the original task runs unmodified — instrumentation is best effort and
   never breaks a deploy.

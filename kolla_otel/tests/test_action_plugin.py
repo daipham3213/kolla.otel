@@ -117,11 +117,33 @@ def test_enabled_non_target_container_is_passthrough():
     assert "kolla_otel.managed_env" not in sink["args"]["labels"]
 
 
-def test_non_create_action_is_passthrough():
+def test_non_augmentable_action_is_passthrough():
     sink = {}
     args = dict(_TARGET_ARGS, action="remove_container")
     _plugin(args, sink).run(task_vars=dict(_ENABLED))
     assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+
+
+def test_compare_container_is_made_otel_aware():
+    """compare_container gets the same overlay so kolla detects the diff and
+    fires its recreate handler (which is then augmented too)."""
+    sink = {}
+    args = {
+        "action": "compare_container",
+        "name": "nova_api",
+        "environment": {"KOLLA_X": "1"},
+    }
+    _plugin(args, sink).run(task_vars=dict(_ENABLED))
+    augmented = sink["args"]
+    # The compared desired spec now includes the OTEL env/mount/label, so a
+    # not-yet-instrumented running container will compare as different.
+    assert augmented["environment"]["OTEL_SERVICE_NAME"] == "nova-api"
+    assert "PYTHONPATH" in augmented["environment"]
+    assert any(
+        "/otel-auto-instrumentation-python:ro" in v
+        for v in augmented["volumes"]
+    )
+    assert "kolla_otel.managed_env" in augmented["labels"]
 
 
 def test_custom_service_list_is_honored():

@@ -27,10 +27,13 @@ Safety is the overriding concern, because this plugin is in the call path of
 * It is **off by default.** Unless ``otel_auto_instrument`` is truthy *and*
   ``otel_exporter_endpoint`` is set, ``run`` does nothing but delegate to the
   real module — a one-lookup passthrough.
-* It only ever augments the two container-creating actions
-  (``start_container`` / ``recreate_or_restart_container``) and only for
+* It only ever augments the create/compare actions (``start_container``,
+  ``recreate_or_restart_container`` and ``compare_container``) and only for
   containers in the configured target list. Everything else is passed through
-  byte-for-byte.
+  byte-for-byte. Augmenting ``compare_container`` is what makes kolla notice
+  missing instrumentation on ``deploy``/``reconfigure`` and fire its own
+  recreate handler (which we then augment); once instrumented the comparison
+  matches, so no needless recreate happens.
 * It **fails open**: any error while computing the overlay is logged as a
   warning and the original task is run unmodified. Instrumentation is best
   effort; it must never break a deploy.
@@ -124,11 +127,13 @@ class ActionModule(ActionBase):
 
         from kolla_otel import instrumentation as instr
 
-        # Gate 2: only the container-creating actions carry a spec to augment.
-        if action not in instr.CREATE_ACTIONS:
+        # Gate 2: only container-create/compare actions carry a spec to
+        # augment (compare so kolla notices missing instrumentation and fires
+        # its recreate handler; see instrumentation.AUGMENT_ACTIONS).
+        if action not in instr.AUGMENT_ACTIONS:
             display.vvv(
-                f"otel: '{label}': action '{action}' is not a create "
-                "action -> passthrough"
+                f"otel: '{label}': action '{action}' is not augmentable "
+                "-> passthrough"
             )
             return module_args
 
@@ -223,7 +228,15 @@ class ActionModule(ActionBase):
         labels[label] = instr.managed_label_value(managed)
         module_args["labels"] = labels
 
-        display.vvv(
-            f"otel: instrumented kolla_container '{name}' ({language})"
-        )
+        if action == "compare_container":
+            # Not a recreate: we only make kolla's change-detection OTEL-aware
+            # so it recreates (via its handler) when OTEL is missing.
+            display.vvv(
+                f"otel: '{name}' ({language}): compare is OTEL-aware "
+                "(kolla will recreate if not yet instrumented)"
+            )
+        else:
+            display.vvv(
+                f"otel: instrumented kolla_container '{name}' ({language})"
+            )
         return module_args

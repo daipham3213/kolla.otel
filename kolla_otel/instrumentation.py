@@ -25,6 +25,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 __all__ = [
+    "AUGMENT_ACTIONS",
     "LANGUAGE_DEFAULTS",
     "COMMON_ENV_MAP",
     "SCALAR_DEFAULTS",
@@ -42,10 +43,22 @@ __all__ = [
     "find_service",
 ]
 
-#: Container-creating ``kolla_container`` actions whose spec we augment. Every
-#: other action (stop/remove/facts/…) is passed through untouched.
-CREATE_ACTIONS = frozenset(
-    {"start_container", "recreate_or_restart_container"}
+#: ``kolla_container`` actions whose desired spec we augment. Every other
+#: action (stop/remove/facts/…) is passed through untouched.
+#:
+#: ``compare_container`` is included on purpose: kolla decides whether to
+#: (re)create a container by comparing its own desired spec against the running
+#: one and only then notifying its restart handler. Augmenting the comparison
+#: with the OTEL env/mount/label makes kolla notice the missing instrumentation
+#: and fire that handler — whose ``recreate_or_restart_container`` we also
+#: augment. Once instrumented the comparison matches again, so no needless
+#: recreate happens on subsequent runs.
+AUGMENT_ACTIONS = frozenset(
+    {
+        "compare_container",
+        "start_container",
+        "recreate_or_restart_container",
+    }
 )
 
 DEFAULT_HOST_LIB_PATH = "/etc/kolla/opentelemetry"
