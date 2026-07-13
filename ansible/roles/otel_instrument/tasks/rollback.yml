@@ -1,0 +1,112 @@
+---
+# Rolls back one service. Included per present container from main.yml with
+# `otel_service` set when `otel_action == 'rollback'`. Recreates the container
+# back to its pre-instrumentation state: the managed OTEL_* environment is
+# stripped, the managed-env label removed and the agent bind-mount dropped.
+#
+# The set of env keys to strip is taken primarily from the label the inject
+# path recorded (`otel_managed_env_label`) — the authoritative record of what
+# this role added. As a safety net (e.g. a container instrumented before the
+# label existed, or whose label was lost) we also strip every key this role
+# *could* manage, computed from names alone so no exporter endpoint is needed.
+
+- name: "OTel rollback | Resolve language and current state | {{ otel_service.name }}"
+  ansible.builtin.set_fact:
+    # Deep-merge any user override onto the built-in language definition so a
+    # partial `otel_languages` override never drops `mount_path`/`activation`.
+    otel_lang: >-
+      {{ otel_language_defaults[otel_service.language] | default({})
+         | combine(otel_languages[otel_service.language] | default({}),
+                   recursive=True) }}
+    otel_attrs: "{{ otel_container_facts.containers[otel_service.container_name] }}"
+    otel_current_env: "{{ otel_env_facts.envs[otel_service.container_name] | default({}) }}"
+
+- name: "OTel rollback | Compute the de-instrumented spec | {{ otel_service.name }}"
+  vars:
+    # Keys recorded as managed on the last instrument run (declarative record).
+    otel_prev_keys: >-
+      {{ ((otel_attrs.Config.Labels | default({}))
+          .get(otel_managed_env_label, '')).split(',') | select | list }}
+    # Every env key this role could have set, by name only (no endpoint needed).
+    otel_possible_keys: >-
+      {{ (otel_common_environment.keys() | list)
+         + (otel_extra_environment.keys() | list)
+         + ['OTEL_SERVICE_NAME', 'OTEL_RESOURCE_ATTRIBUTES']
+         + (otel_service.environment | default({})).keys() | list
+         + (otel_lang.activation.keys() | list) }}
+    otel_strip_keys: "{{ (otel_prev_keys + otel_possible_keys) | unique }}"
+    # True when there is actually something to undo, so a second rollback (or a
+    # never-instrumented container) is a no-op instead of a needless recreate.
+    otel_had_label: >-
+      {{ otel_managed_env_label in (otel_attrs.Config.Labels | default({})) }}
+    otel_bind_re: >-
+      ^[^:]+:{{ otel_lang.mount_path | regex_escape }}(:.*)?$
+    otel_had_mount: >-
+      {{ (otel_attrs.HostConfig.Binds | default([]))
+         | select('match', otel_bind_re) | list | length > 0 }}
+    otel_stale_env: >-
+      {{ (otel_current_env.keys() | list)
+         | select('in', otel_strip_keys) | list | length > 0 }}
+  ansible.builtin.set_fact:
+    # Current env with every managed / possibly-managed key removed, leaving the
+    # base image + kolla env untouched.
+    otel_rb_environment: >-
+      {{ otel_current_env | dict2items
+         | rejectattr('key', 'in', otel_strip_keys) | items2dict }}
+    # Existing labels with only the managed-env label removed.
+    otel_rb_labels: >-
+      {{ (otel_attrs.Config.Labels | default({})) | dict2items
+         | rejectattr('key', 'equalto', otel_managed_env_label)
+         | items2dict }}
+    # Existing binds with our agent mount (whatever its source) dropped.
+    otel_rb_volumes: >-
+      {{ (otel_attrs.HostConfig.Binds | default([]))
+         | reject('match', otel_bind_re) | list }}
+    otel_rb_changed: "{{ otel_had_label or otel_had_mount or otel_stale_env }}"
+
+# Docker reports healthcheck durations in nanoseconds; kolla's
+# parse_healthcheck expects seconds and every key present, so convert here.
+- name: "OTel rollback | Preserve healthcheck | {{ otel_service.name }}"
+  when: otel_rb_changed | bool
+  vars:
+    hc: "{{ otel_attrs.Config.Healthcheck | default({}) }}"
+  ansible.builtin.set_fact:
+    otel_healthcheck: >-
+      {{ omit if (not hc or hc.Test | default([]) in [['NONE'], []]) else {
+           'test': hc.Test,
+           'interval': (hc.Interval | default(0) | int) // 1000000000,
+           'timeout': (hc.Timeout | default(0) | int) // 1000000000,
+           'start_period': (hc.StartPeriod | default(0) | int) // 1000000000,
+           'retries': hc.Retries | default(3) | int,
+         } }}
+
+# --- Recreate the container without the instrumentation --------------------
+# Mirrors the inject path: attributes kolla's recreate would not otherwise
+# preserve (privileged, pid/ipc mode, capabilities, healthcheck) are read back
+# from the running container so special containers such as nova_compute survive
+# unchanged apart from the removed env/volume/label. Removing the managed label
+# and the agent bind reliably triggers the recreate, so the reduced environment
+# takes effect even though kolla's env comparison is additive-only.
+- name: "OTel rollback | Recreate container without OpenTelemetry | {{ otel_service.name }}"
+  when: otel_rb_changed | bool
+  become: true
+  kolla_container:
+    action: recreate_or_restart_container
+    common_options: "{{ docker_common_options }}"
+    name: "{{ otel_service.container_name }}"
+    image: "{{ otel_attrs.Config.Image }}"
+    environment: "{{ otel_rb_environment }}"
+    labels: "{{ otel_rb_labels }}"
+    volumes: "{{ otel_rb_volumes }}"
+    privileged: "{{ otel_attrs.HostConfig.Privileged | default(false) }}"
+    pid_mode: >-
+      {{ otel_attrs.HostConfig.PidMode
+         if (otel_attrs.HostConfig.PidMode | default('')) == 'host'
+         else omit }}
+    ipc_mode: >-
+      {{ otel_attrs.HostConfig.IpcMode
+         if (otel_attrs.HostConfig.IpcMode | default('')) == 'host'
+         else omit }}
+    cap_add: "{{ otel_attrs.HostConfig.CapAdd | default([]) or omit }}"
+    security_opt: "{{ otel_attrs.HostConfig.SecurityOpt | default([]) or omit }}"
+    healthcheck: "{{ otel_healthcheck }}"

@@ -4,8 +4,23 @@
 #
 # These defaults mirror the kolla_otel Python domain model (OTelConfig +
 # per-language injectors). Override them in globals.yml or via the CLI's
-# --config file (translated into extra-vars by `kolla-ansible instrument`).
+# --config file (translated into extra-vars by `kolla-ansible otel-instrument`).
 ###############################################################################
+
+# --- Action -----------------------------------------------------------------
+# What this run does:
+#   instrument - inject the agent + OTEL_* env and recreate (default)
+#   rollback   - undo instrumentation: strip the managed env, drop the agent
+#                bind-mount and the managed label, then recreate the container
+#                back to its pre-instrumentation state.
+# Set by the `kolla-ansible otel-instrument` / `otel-rollback` commands;
+# override on the CLI (`-e otel_action=rollback`) when running ansible directly.
+otel_action: "instrument"
+
+# On rollback, also delete the agent artifacts staged under
+# otel_host_lib_path from the host (they are useless once nothing mounts
+# them). Set to false to keep them for a quick re-instrument.
+otel_rollback_remove_agent: true
 
 # --- OTLP export configuration ---------------------------------------------
 # The collector endpoint reachable from inside the service containers.

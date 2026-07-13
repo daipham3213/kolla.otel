@@ -43,13 +43,42 @@ run with unchanged config pulls the image, finds the recorded image id and the
 managed env unchanged, and makes no change. Bumping `otel_image_version` (or a
 moved tag) re-stages the agent and recreates the affected containers.
 
+## Rolling back
+
+`otel_action=rollback` (run it via `kolla-ansible otel-rollback` or the
+`otel-rollback.yml` playbook) undoes instrumentation. For every targeted
+container present on a host that this role previously instrumented, it
+recreates the container back to its pre-instrumentation state:
+
+1. reads the `otel_managed_env_label` to learn which env keys were injected,
+2. strips those keys — plus, as a safety net, every key the role *could* have
+   managed (computed from names alone, so no exporter endpoint is needed) —
+   leaving the base image / kolla env untouched,
+3. drops the agent bind-mount at the language's `mount_path` and removes the
+   managed-env label,
+4. recreates the container (preserving privileged / pid / ipc mode,
+   capabilities and healthcheck exactly like the inject path).
+
+Removing the label and the bind-mount reliably triggers kolla's recreate (its
+env comparison is additive-only and would not notice removed keys on its own),
+so the reduced environment actually takes effect. Once every targeted
+container on a host is rolled back, the staged agent artifacts under
+`otel_host_lib_path` are deleted too — set `otel_rollback_remove_agent=false`
+to keep them for a quick re-instrument.
+
+Rollback is **idempotent**: a container with no managed label, no agent mount
+and no managed env keys is left untouched, so a second run (or rolling back a
+never-instrumented container) is a no-op.
+
 ## Key variables
 
 See [`defaults/main.yml`](defaults/main.yml). The essentials:
 
 | Variable | Purpose |
 | --- | --- |
-| `otel_exporter_endpoint` | **Required.** OTLP collector endpoint. |
+| `otel_action` | `instrument` (default) or `rollback`. |
+| `otel_rollback_remove_agent` | On rollback, also delete staged agent artifacts from the host (default `true`). |
+| `otel_exporter_endpoint` | **Required** (for `instrument`). OTLP collector endpoint. |
 | `otel_exporter_protocol` | `grpc` (default) or `http/protobuf`. |
 | `otel_deployment_environment` | Optional `deployment.environment` attribute. |
 | `otel_image_registry` / `otel_image_version` | Agent image source/tag. |
@@ -64,7 +93,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 
 - **Kolla owns the container spec.** A subsequent `kolla-ansible deploy`/
   `reconfigure` recreates services from kolla's own definitions and will drop
-  the injected env/volume. Re-run `kolla-ansible instrument` afterwards (or
+  the injected env/volume. Re-run `kolla-ansible otel-instrument` afterwards (or
   fold the settings into kolla via a pull request) to reapply.
 - Custom `dimensions` (ulimits/memory limits) are **not** reconstructed on
   recreate; healthcheck, privileged, pid/ipc mode and capabilities are.
