@@ -16,6 +16,21 @@
 # When no external collector is configured, target the per-host local
 # collector (deployed by the otel_collector role). This makes the exporter
 # endpoint always well-defined, so there is nothing left to validate.
+#
+# otel_local_collector_endpoint resolves this host's api_interface address,
+# which needs network facts. The play runs with gather_facts:false (kolla
+# usually serves these from its fact cache), so gather them on demand when they
+# are absent and we are actually in local-collector mode.
+- name: Gather network facts for the local collector endpoint
+  when:
+    - otel_exporter_endpoint | length == 0
+    - (api_interface | default('lo', true) | replace('-', '_')) not in ansible_facts
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+      - "!min"
+      - network
+
 - name: Default the exporter endpoint to the local collector when unset
   when: otel_exporter_endpoint | length == 0
   ansible.builtin.set_fact:

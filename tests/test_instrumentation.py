@@ -62,12 +62,20 @@ class RoleDefaultsDriftTestCase:
         assert str(role["otel_image_version"]) == instr.DEFAULT_IMAGE_VERSION
 
     def test_local_collector_endpoint_matches_role(self) -> None:
-        """The local-collector fallback endpoint matches the role default."""
-        role = _role_defaults()
-        assert (
-            role["otel_local_collector_endpoint"]
-            == instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
-        )
+        """The role default resolves this host's api_interface address; when
+        no address can be resolved (no facts / interface unset) it falls back
+        to the Python constant the action plugin uses."""
+        from jinja2 import Environment
+
+        expr = _role_defaults()["otel_local_collector_endpoint"]
+        # The role value is now a Jinja expression, not a bare literal.
+        assert "{{" in expr
+        env = Environment()
+        # Stub kolla's put_address_in_context filter (identity for IPv4) so the
+        # expression renders without an Ansible templar.
+        env.filters["put_address_in_context"] = lambda addr, ctx=None: addr
+        rendered = env.from_string(expr).render(ansible_facts={})
+        assert rendered == instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
 
 
 class InstrumentationTestCase:

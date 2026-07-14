@@ -93,8 +93,9 @@ kolla-ansible otel-instrument -i /etc/kolla/inventory
 If you **omit** `otel_exporter_endpoint`, `otel-instrument` deploys an
 `opentelemetry-collector-contrib` container on **each host** (the
 [`otel_collector`](ansible/roles/otel_collector) role) and points
-instrumentation at it over loopback (`http://127.0.0.1:4317`, reachable because
-kolla uses host networking). The default collector pipeline logs received
+instrumentation at it on the host's own `api_interface` address
+(`otel_local_collector_endpoint`, reachable because kolla uses host
+networking). The default collector pipeline logs received
 telemetry (`debug` exporter); to forward to your real backend, set the
 collector's section options (`otel_collector_exporters`,
 `otel_collector_service_pipelines`, …) in `globals.yml`/`host_vars` — they are

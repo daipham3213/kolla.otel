@@ -94,8 +94,7 @@ otel_collector_service_pipelines:
 ### 2. A config-file override (advanced) — kolla `node_custom_config` convention
 
 For deltas you'd rather keep in a file, drop a YAML config on the **deploy
-host**, alongside kolla's per-service overrides
-(`/etc/kolla/config/nova/nova.conf`). The role picks the first that exists,
+host**, alongside kolla's per-service overrides. The role picks the first that exists,
 most-specific first, and **deep-merges** it onto the assembled config:
 
 ```
