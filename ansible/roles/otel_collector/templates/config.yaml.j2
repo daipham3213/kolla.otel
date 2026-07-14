@@ -1,0 +1,30 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+# {{ ansible_managed }}
+# OpenTelemetry Collector configuration for {{ inventory_hostname }}, assembled
+# by the kolla-otel otel_collector role from its otel_collector_* variables.
+# Do not edit on the host: change the role variables (globals.yml / host_vars)
+# or layer a node_custom_config override.
+{% if otel_collector_extensions %}
+extensions:
+{{ otel_collector_extensions | to_nice_yaml(indent=2) | indent(2, true) }}
+{% endif %}
+receivers:
+{{ otel_collector_receivers | to_nice_yaml(indent=2) | indent(2, true) }}
+processors:
+{{ otel_collector_processors | to_nice_yaml(indent=2) | indent(2, true) }}
+exporters:
+{{ otel_collector_exporters | to_nice_yaml(indent=2) | indent(2, true) }}
+{% if otel_collector_connectors %}
+connectors:
+{{ otel_collector_connectors | to_nice_yaml(indent=2) | indent(2, true) }}
+{% endif %}
+service:
+{% if otel_collector_service_extensions %}
+  extensions: {{ otel_collector_service_extensions | to_json }}
+{% endif %}
+  pipelines:
+{{ otel_collector_service_pipelines | to_nice_yaml(indent=2) | indent(4, true) }}
+{% if otel_collector_service_telemetry %}
+  telemetry:
+{{ otel_collector_service_telemetry | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}
