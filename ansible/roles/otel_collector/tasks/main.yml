@@ -42,7 +42,7 @@
       ansible.builtin.copy:
         src: "{{ otel_collector_config_src }}"
         dest: "{{ otel_collector_config_dir }}/config.yaml"
-        mode: "0660"
+        mode: "{{ otel_collector_config_mode }}"
       notify: Restart otel collector container
 
     - name: "OTel collector | Render the built-in config"
@@ -50,7 +50,7 @@
       ansible.builtin.copy:
         content: "{{ otel_collector_config | to_nice_yaml(indent=2) }}"
         dest: "{{ otel_collector_config_dir }}/config.yaml"
-        mode: "0660"
+        mode: "{{ otel_collector_config_mode }}"
       notify: Restart otel collector container
 
     - name: "OTel collector | Pull the collector image"

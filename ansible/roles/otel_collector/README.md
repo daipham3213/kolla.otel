@@ -109,9 +109,27 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_collector_custom_config_dir` | Deploy-host dir scanned for an override `config.yaml` (default `<node_custom_config>/otel-collector`). |
 | `otel_collector_config` | Inline fallback pipeline config, used when no override file exists. |
 | `otel_collector_config_dir` | Host dir holding `config.yaml` (default `/etc/kolla/otel-collector`). |
+| `otel_collector_config_mode` | Mode of the rendered config file (default `0644`). The contrib image runs as a **non-root** user (UID 10001) and reads the file over a read-only bind mount, so it must be world-readable; tighten only if you also chown it to the collector's UID out of band. |
 | `otel_collector_grpc_port` / `_http_port` | OTLP listener ports (4317 / 4318). |
 | `otel_collector_restart_policy` | Container restart policy (default `unless-stopped`). |
 
 Keep `otel_collector_grpc_port` in sync with the port in
 `otel_local_collector_endpoint` (in the `otel_instrument` role) if you change
 it.
+
+## Troubleshooting
+
+**Container exits immediately with `config.yaml: permission denied`:**
+
+```
+Error: failed to get config: cannot resolve the configuration: ...
+  unable to read the file file:/etc/otelcol-contrib/config.yaml:
+  open /etc/otelcol-contrib/config.yaml: permission denied
+```
+
+The contrib image runs as a non-root user (UID 10001) and cannot read a
+root-owned config that is not world-readable. The role writes the file
+`0644` (`otel_collector_config_mode`) to avoid this; if you overrode that mode
+or manage the file yourself, ensure the collector user can read it (`chmod o+r`
+or chown it to UID 10001). Re-running the playbook re-applies the mode and
+restarts the collector.

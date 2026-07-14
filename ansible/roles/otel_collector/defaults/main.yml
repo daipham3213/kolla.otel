@@ -29,6 +29,12 @@ otel_collector_container_name: "otel_collector"
 otel_collector_config_dir: "/etc/kolla/otel-collector"
 # The contrib image reads its config from this path by default.
 otel_collector_config_container_path: "/etc/otelcol-contrib/config.yaml"
+# Mode of the rendered config file on the host. The contrib image runs as a
+# NON-root user (UID 10001), and the file is bind-mounted read-only, so it must
+# be world-readable (o+r) for the collector to read it — otherwise it exits
+# with "config.yaml: permission denied". Tighten this (e.g. "0640") only if you
+# also chown the file to the collector's UID/GID out of band.
+otel_collector_config_mode: "0644"
 otel_collector_restart_policy: "unless-stopped"
 otel_collector_dimensions: {}
 
