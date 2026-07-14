@@ -132,10 +132,21 @@ def test_enabled_target_container_is_instrumented():
     assert args["labels"]["kolla_version"] == "22"
 
 
-def test_enabled_but_endpoint_missing_is_passthrough():
+def test_endpoint_missing_falls_back_to_local_collector():
+    """With no external endpoint, instrumentation targets the local collector
+    (deployed per host by the otel_collector role)."""
     sink = {}
     _plugin(_TARGET_ARGS, sink).run(task_vars={"otel_auto_instrument": True})
-    assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+    env = sink["args"]["environment"]
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:4317"
+    assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+
+def test_external_endpoint_is_used_when_set():
+    sink = {}
+    _plugin(_TARGET_ARGS, sink).run(task_vars=dict(_ENABLED))
+    env = sink["args"]["environment"]
+    assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4317"
 
 
 def test_enabled_non_target_container_is_passthrough():

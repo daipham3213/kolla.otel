@@ -66,6 +66,15 @@ def test_image_defaults_match_role() -> None:
     assert str(role["otel_image_version"]) == instr.DEFAULT_IMAGE_VERSION
 
 
+def test_local_collector_endpoint_matches_role() -> None:
+    """The local-collector fallback endpoint matches the role default."""
+    role = _role_defaults()
+    assert (
+        role["otel_local_collector_endpoint"]
+        == instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
+    )
+
+
 # --- overlay logic ----------------------------------------------------------
 
 

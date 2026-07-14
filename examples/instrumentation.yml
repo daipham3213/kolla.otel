@@ -13,6 +13,9 @@
 #
 otel:
   # OTLP collector reachable from the OpenStack service containers.
+  # Omit this to run in "local collector" mode: a per-host
+  # opentelemetry-collector-contrib is deployed and used automatically
+  # (see the otel_collector role).
   exporter_endpoint: http://otel-collector.observability.svc:4317
   exporter_protocol: grpc
   # Pin the auto-instrumentation image tag for reproducible deployments.

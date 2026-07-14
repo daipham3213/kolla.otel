@@ -1,0 +1,9 @@
+---
+# Restart the local collector when only its config file changed (kolla's
+# recreate compares the container spec, not the mounted config contents).
+- name: Restart otel collector container
+  become: true
+  kolla_container:
+    action: restart_container
+    common_options: "{{ docker_common_options }}"
+    name: "{{ otel_collector_container_name }}"

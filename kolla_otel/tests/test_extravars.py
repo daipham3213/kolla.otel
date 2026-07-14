@@ -53,6 +53,13 @@ def test_to_extra_vars_omits_optional_fields_when_unset() -> None:
     assert "otel_resource_attributes_extra" not in extra
 
 
+def test_to_extra_vars_omits_empty_endpoint_for_local_mode() -> None:
+    """An empty endpoint is omitted so the role defaults to the local
+    collector (rather than pinning an empty value over globals.yml)."""
+    extra = to_extra_vars(OTelConfig(exporter_endpoint=""), [_spec()])
+    assert "otel_exporter_endpoint" not in extra
+
+
 def test_to_extra_vars_builds_service_entries() -> None:
     """Each enabled spec yields a service entry with a container name."""
     specs = [

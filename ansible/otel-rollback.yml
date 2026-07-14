@@ -12,6 +12,9 @@
 # By default the staged agent artifacts under otel_host_lib_path are also
 # removed once nothing mounts them; pass `-e otel_rollback_remove_agent=false`
 # to keep them for a quick re-instrument.
+#
+# Services are de-instrumented first, then the otel_collector role removes any
+# local collector it deployed (a no-op when an external endpoint was used).
 - name: Roll back OpenTelemetry auto-instrumentation from OpenStack containers
   hosts: "{{ otel_instrument_hosts | default('all') }}"
   gather_facts: false
@@ -20,5 +23,8 @@
   max_fail_percentage: "{{ kolla_max_fail_percentage | default(100) }}"
   roles:
     - role: otel_instrument
+      vars:
+        otel_action: rollback
+    - role: otel_collector
       vars:
         otel_action: rollback

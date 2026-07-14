@@ -68,6 +68,16 @@ then run, like any other kolla command:
 kolla-ansible otel-instrument -i /etc/kolla/inventory
 ```
 
+### Local collector (no external endpoint)
+
+If you **omit** `otel_exporter_endpoint`, `otel-instrument` deploys an
+`opentelemetry-collector-contrib` container on **each host** (the
+[`otel_collector`](ansible/roles/otel_collector) role) and points
+instrumentation at it over loopback (`http://127.0.0.1:4317`, reachable because
+kolla uses host networking). The default collector pipeline logs received
+telemetry (`debug` exporter); override `otel_collector_config` in `globals.yml`
+to forward to your real backend. `otel-rollback` removes the collector again.
+
 Alternatively, pass a standalone config file (validated and translated into
 the role's `otel_*` variables):
 
@@ -156,6 +166,7 @@ The injection logic lives in Ansible; the Python package is a thin driver.
 | Component | Responsibility |
 | --- | --- |
 | `ansible/roles/otel_instrument` | Stages the agent and recreates each container with the OTel env/volume; also rolls it back (see its [README](ansible/roles/otel_instrument/README.md)) |
+| `ansible/roles/otel_collector` | Deploys a per-host local collector when no external endpoint is set (see its [README](ansible/roles/otel_collector/README.md)) |
 | `ansible/otel-instrument.yml` / `ansible/otel-rollback.yml` | Playbooks run by the two commands |
 | `ansible/action_plugins/kolla_container.py` | Optional wrapper re-applying instrumentation on every kolla container (re)create |
 | `kolla_otel.config` | Validated configuration model + loader |

@@ -11,6 +11,10 @@
 # (ansible.cfg). Set otel_instrument_strategy=free to let each host run the
 # whole play without waiting for the others at every task (faster when hosts
 # have very different container counts, e.g. controllers vs computes).
+#
+# The otel_collector role runs first: when no external `otel_exporter_endpoint`
+# is set it deploys a local collector on each host (otherwise it is a no-op),
+# so the collector is listening before the services are pointed at it.
 - name: Apply OpenTelemetry auto-instrumentation to OpenStack containers
   hosts: "{{ otel_instrument_hosts | default('all') }}"
   gather_facts: false
@@ -18,4 +22,5 @@
   serial: "{{ kolla_serial | default('0') }}"
   max_fail_percentage: "{{ kolla_max_fail_percentage | default(100) }}"
   roles:
+    - role: otel_collector
     - role: otel_instrument

@@ -52,10 +52,10 @@ def test_otelconfig_defaults() -> None:
     assert config.deployment_environment is None
 
 
-def test_otelconfig_rejects_empty_endpoint() -> None:
-    """An empty endpoint is invalid."""
-    with pytest.raises(ConfigurationError):
-        OTelConfig(exporter_endpoint="")
+def test_otelconfig_allows_empty_endpoint_for_local_mode() -> None:
+    """An empty endpoint is valid — it selects local-collector mode."""
+    config = OTelConfig(exporter_endpoint="")
+    assert config.exporter_endpoint == ""
 
 
 def test_otelconfig_rejects_bad_protocol() -> None:
@@ -166,11 +166,22 @@ def test_load_config_requires_otel_section() -> None:
         load_config({"services": [{"name": "x", "language": "python"}]})
 
 
-def test_load_config_requires_endpoint() -> None:
-    """A missing endpoint is rejected."""
+def test_load_config_allows_missing_endpoint_for_local_mode() -> None:
+    """A missing endpoint is allowed and yields local-collector mode."""
+    config, _specs = load_config(
+        {"otel": {}, "services": [{"name": "x", "language": "python"}]}
+    )
+    assert config.exporter_endpoint == ""
+
+
+def test_load_config_rejects_non_string_endpoint() -> None:
+    """A non-string endpoint is still rejected."""
     with pytest.raises(ConfigurationError):
         load_config(
-            {"otel": {}, "services": [{"name": "x", "language": "python"}]}
+            {
+                "otel": {"exporter_endpoint": 4317},
+                "services": [{"name": "x", "language": "python"}],
+            }
         )
 
 
