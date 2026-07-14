@@ -54,6 +54,25 @@ kolla-ansible otel-rollback --help
 kolla-ansible otel-collector --help
 ```
 
+### Older kolla-ansible (no plugin support)
+
+Some kolla-ansible releases (e.g. **18.8.0**) do not load external commands
+from the `kolla_ansible.cli` namespace, so `kolla-ansible otel-instrument` is
+unavailable there. For those, kolla-otel also installs a self-contained
+`kolla-otel` console script exposing the same commands (just without the
+`otel-` prefix):
+
+```bash
+kolla-otel instrument -i /etc/kolla/inventory
+kolla-otel rollback   -i /etc/kolla/inventory
+kolla-otel collector  -i /etc/kolla/inventory [--remove]
+```
+
+It accepts the same Ansible arguments (`-i/--inventory`, `--configdir`, `-e`,
+…) and the same `--config`, and runs the same playbooks — only the command
+dispatch is independent of the kolla-ansible CLI version. Use whichever is
+available; they are equivalent.
+
 ## Usage
 
 Configure the OTLP endpoint (and any overrides) in `globals.yml`:
@@ -189,7 +208,8 @@ The injection logic lives in Ansible; the Python package is a thin driver.
 | `kolla_otel.config` | Validated configuration model + loader |
 | `kolla_otel.extravars` | Translates the config model into the role's `otel_*` variables |
 | `kolla_otel.instrumentation` | Shared, dependency-free overlay logic used by the action plugin |
-| `kolla_otel.cli` | The `cliff` commands (`otel-instrument` / `otel-rollback`) that run the playbooks |
+| `kolla_otel.cli` | The `cliff` commands (`otel-instrument` / `otel-rollback` / `otel-collector`) that run the playbooks |
+| `kolla_otel.app` | Self-contained `kolla-otel` console-script app hosting the same commands for kolla-ansible releases without plugin support |
 
 `config` and `extravars` have **no third-party dependencies** and are unit
 tested without `cliff` or a live Ansible run.
