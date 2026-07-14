@@ -37,11 +37,24 @@ otel_collector_grpc_port: 4317
 otel_collector_http_port: 4318
 
 # --- Collector pipeline configuration ---------------------------------------
-# Rendered verbatim to the collector config file. The default is a functional
-# OTLP-in -> debug-out pipeline (received telemetry is logged), so the collector
-# runs out of the box; override `otel_collector_config` in globals.yml to export
-# to a real backend, e.g. add an `otlp`/`otlphttp` exporter pointing at your
-# observability stack and list it under each pipeline's `exporters`.
+# There are two ways to configure the collector:
+#
+# 1. An operator-provided config FILE, following kolla's node_custom_config
+#    convention (like /etc/kolla/config/nova/nova.conf). Drop a complete
+#    collector config at one of these paths (scanned most-specific first, on
+#    the deploy host); the first that exists REPLACES the built-in config:
+#        <node_custom_config>/otel-collector/<inventory_hostname>/config.yaml
+#        <node_custom_config>/otel-collector/config.yaml
+#    e.g. /etc/kolla/config/otel-collector/config.yaml
+otel_collector_custom_config_dir: >-
+  {{ node_custom_config | default('/etc/kolla/config') }}/otel-collector
+
+# 2. The inline `otel_collector_config` below (used only when no override file
+#    is found). Rendered verbatim to the collector config file. The default is
+#    a functional OTLP-in -> debug-out pipeline (received telemetry is logged),
+#    so the collector runs out of the box; override it in globals.yml, or use a
+#    file per (1), to export to a real backend (add an otlp/otlphttp exporter
+#    pointing at your observability stack and list it under each pipeline).
 otel_collector_config:
   receivers:
     otlp:
@@ -51,21 +64,39 @@ otel_collector_config:
         http:
           endpoint: "0.0.0.0:{{ otel_collector_http_port }}"
   processors:
-    batch: {}
+    batch: { }
+    resource:
+      attributes:
+        - key: host.name
+          from_attribute: ""
+          action: upsert
+          value: "${HOSTNAME}"
   exporters:
     debug:
       verbosity: "normal"
   service:
     pipelines:
       traces:
-        receivers: ["otlp"]
-        processors: ["batch"]
-        exporters: ["debug"]
+        receivers:
+          - "otlp"
+        processors:
+          - "resource"
+          - "batch"
+        exporters:
+          - "debug"
       metrics:
-        receivers: ["otlp"]
-        processors: ["batch"]
-        exporters: ["debug"]
+        receivers:
+          - "otlp"
+        processors:
+          - "resource"
+          - "batch"
+        exporters:
+          - "debug"
       logs:
-        receivers: ["otlp"]
-        processors: ["batch"]
-        exporters: ["debug"]
+        receivers:
+          - "otlp"
+        processors:
+          - "resource"
+          - "batch"
+        exporters:
+          - "debug"

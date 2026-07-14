@@ -22,13 +22,35 @@
         state: directory
         mode: "0770"
 
-    - name: "OTel collector | Render collector configuration"
+    # Prefer an operator-provided config file (kolla node_custom_config
+    # convention), most-specific first; fall back to the inline default.
+    # first_found runs on the deploy host, where these overrides live.
+    - name: "OTel collector | Locate an operator-provided config file"
+      ansible.builtin.set_fact:
+        otel_collector_config_src: >-
+          {{ lookup('first_found', dict(files=_otel_collector_config_files,
+                                        skip=true)) | default('', true) }}
+      vars:
+        _otel_collector_config_files:
+          - "{{ otel_collector_custom_config_dir }}/{{ inventory_hostname }}/config.yaml"
+          - "{{ otel_collector_custom_config_dir }}/config.yaml"
+
+    # kolla's recreate compares the container spec, not the config file
+    # contents, so a config-only change needs an explicit restart (handler).
+    - name: "OTel collector | Install operator-provided config"
+      when: otel_collector_config_src | length > 0
+      ansible.builtin.copy:
+        src: "{{ otel_collector_config_src }}"
+        dest: "{{ otel_collector_config_dir }}/config.yaml"
+        mode: "0660"
+      notify: Restart otel collector container
+
+    - name: "OTel collector | Render the built-in config"
+      when: otel_collector_config_src | length == 0
       ansible.builtin.copy:
         content: "{{ otel_collector_config | to_nice_yaml(indent=2) }}"
         dest: "{{ otel_collector_config_dir }}/config.yaml"
         mode: "0660"
-      # kolla's recreate compares the container spec, not the config file
-      # contents, so a config-only change needs an explicit restart (handler).
       notify: Restart otel collector container
 
     - name: "OTel collector | Pull the collector image"

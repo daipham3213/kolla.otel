@@ -75,8 +75,11 @@ If you **omit** `otel_exporter_endpoint`, `otel-instrument` deploys an
 [`otel_collector`](ansible/roles/otel_collector) role) and points
 instrumentation at it over loopback (`http://127.0.0.1:4317`, reachable because
 kolla uses host networking). The default collector pipeline logs received
-telemetry (`debug` exporter); override `otel_collector_config` in `globals.yml`
-to forward to your real backend. `otel-rollback` removes the collector again.
+telemetry (`debug` exporter); to forward to your real backend, drop a config
+file at `/etc/kolla/config/otel-collector/config.yaml` (kolla's
+`node_custom_config` convention, per-host override supported) or set
+`otel_collector_config` in `globals.yml`. `otel-rollback` removes the
+collector again.
 
 Alternatively, pass a standalone config file (validated and translated into
 the role's `otel_*` variables):

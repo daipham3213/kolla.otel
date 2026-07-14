@@ -39,9 +39,33 @@ collector and deletes its config).
 ## Configuration
 
 The default pipeline is **OTLP in → `debug` out** (received telemetry is
-logged), so the collector runs out of the box. For real observability, override
-`otel_collector_config` in `globals.yml` to add an exporter pointing at your
-backend and list it under each pipeline, e.g.:
+logged), so the collector runs out of the box. Two ways to supply a real
+config (the collector config is holistic, so both **replace** the default
+rather than merging):
+
+### 1. A config file (recommended) — kolla `node_custom_config` convention
+
+Drop a complete collector config on the **deploy host**, exactly like kolla's
+per-service overrides (`/etc/kolla/config/nova/nova.conf`). The role picks the
+first that exists, most-specific first:
+
+```
+<node_custom_config>/otel-collector/<inventory_hostname>/config.yaml   # per host
+<node_custom_config>/otel-collector/config.yaml                        # all hosts
+```
+
+`node_custom_config` defaults to `/etc/kolla/config`, so the common case is:
+
+```
+/etc/kolla/config/otel-collector/config.yaml
+```
+
+Its contents are copied verbatim to the collector container. Point the base
+directory elsewhere with `otel_collector_custom_config_dir`.
+
+### 2. The inline `otel_collector_config` variable (globals.yml)
+
+Used only when no override file is found:
 
 ```yaml
 otel_collector_config:
@@ -71,7 +95,8 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | --- | --- |
 | `otel_exporter_endpoint` | External collector; **empty** enables this role. |
 | `otel_collector_image_registry` / `_repository` / `_tag` | Collector image source (default `docker.io/otel/opentelemetry-collector-contrib:latest`). |
-| `otel_collector_config` | Full collector pipeline config (rendered verbatim). |
+| `otel_collector_custom_config_dir` | Deploy-host dir scanned for an override `config.yaml` (default `<node_custom_config>/otel-collector`). |
+| `otel_collector_config` | Inline fallback pipeline config, used when no override file exists. |
 | `otel_collector_config_dir` | Host dir holding `config.yaml` (default `/etc/kolla/otel-collector`). |
 | `otel_collector_grpc_port` / `_http_port` | OTLP listener ports (4317 / 4318). |
 | `otel_collector_restart_policy` | Container restart policy (default `unless-stopped`). |
