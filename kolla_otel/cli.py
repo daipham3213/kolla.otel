@@ -14,6 +14,10 @@ commands in ``kolla_ansible.cli.commands``: they mix in
   ``otel_action=rollback`` — which strips the injected environment, drops the
   agent bind-mount and the managed-env label, and recreates each affected
   container back to its pre-instrumentation state.
+* ``otel-collector`` runs ``otel-collector.yml`` (the ``otel_collector`` role
+  on its own) to deploy — or, with ``--remove``, tear down — the per-host
+  local collector independently of instrumentation, so it can be stood up and
+  verified before services are pointed at it.
 
 Both accept an optional ``--config`` file, validated by
 :func:`kolla_otel.config.load_config` and translated into the role's
@@ -36,13 +40,14 @@ from kolla_otel.config import load_config
 from kolla_otel.exceptions import KollaOtelError
 from kolla_otel.extravars import to_extra_vars
 
-__all__ = ["Instrument", "Rollback"]
+__all__ = ["Collector", "Instrument", "Rollback"]
 
 _LOG = logging.getLogger(__name__)
 
 #: Playbooks shipped under ``share/kolla-ansible/ansible`` by this package.
 INSTRUMENT_PLAYBOOK = "otel-instrument"
 ROLLBACK_PLAYBOOK = "otel-rollback"
+COLLECTOR_PLAYBOOK = "otel-collector"
 
 
 class _OtelCommand(KollaAnsibleMixin, Command):
@@ -89,11 +94,11 @@ class _OtelCommand(KollaAnsibleMixin, Command):
         """
         self.app.LOG.info(self.start_message)
 
-        extra_vars: dict = {}
+        extra_vars: dict = dict(self._command_extra_vars(parsed_args))
         if parsed_args.config is not None:
             document = self._load_document(parsed_args.config)
             config, specs = load_config(document)
-            extra_vars = to_extra_vars(config, specs)
+            extra_vars.update(to_extra_vars(config, specs))
             _LOG.info(
                 "Loaded config for %d service(s) from %s",
                 len(extra_vars.get("otel_instrument_services", [])),
@@ -103,6 +108,20 @@ class _OtelCommand(KollaAnsibleMixin, Command):
         playbooks = [get_data_files_path("ansible", f"{self.playbook}.yml")]
         self.run_playbooks(parsed_args, playbooks, extra_vars=extra_vars)
         return 0
+
+    def _command_extra_vars(
+        self, parsed_args: argparse.Namespace
+    ) -> dict[str, object]:
+        """Return extra-vars a subcommand injects regardless of ``--config``.
+
+        The base command adds none; subcommands override this to pass their
+        own switches (e.g. ``otel_action``) through to the playbook. Merged
+        beneath any ``--config`` translation.
+
+        :param parsed_args: Parsed command-line arguments.
+        :returns: Extra Ansible variables for this command.
+        """
+        return {}
 
     @staticmethod
     def _load_document(path: Path) -> dict[str, object]:
@@ -139,3 +158,49 @@ class Rollback(_OtelCommand):
 
     playbook = ROLLBACK_PLAYBOOK
     start_message = "Rolling back OpenTelemetry auto-instrumentation"
+
+
+class Collector(_OtelCommand):
+    """Deploy (or, with --remove, tear down) the local OpenTelemetry collector
+
+    Runs the ``otel_collector`` role on its own — independently of any
+    instrumentation — so the per-host local collector can be stood up (and
+    verified) before ``otel-instrument`` points services at it. It only acts
+    when no external ``otel_exporter_endpoint`` is configured; otherwise it is
+    a no-op.
+    """
+
+    playbook = COLLECTOR_PLAYBOOK
+    start_message = "Deploying the local OpenTelemetry collector"
+
+    def get_parser(self, prog_name: str) -> argparse.ArgumentParser:
+        """Add ``--remove`` to the shared parser.
+
+        :param prog_name: Program name supplied by cliff.
+        :returns: The configured parser.
+        """
+        parser: argparse.ArgumentParser = super().get_parser(prog_name)
+        group = parser.add_argument_group("Collector options")
+        group.add_argument(
+            "--remove",
+            action="store_true",
+            help=(
+                "Stop and remove a collector previously deployed by this "
+                "command, instead of deploying one."
+            ),
+        )
+        return parser
+
+    def take_action(self, parsed_args: argparse.Namespace) -> int:
+        """Deploy or remove the collector depending on ``--remove``."""
+        if parsed_args.remove:
+            self.start_message = "Removing the local OpenTelemetry collector"
+        return super().take_action(parsed_args)
+
+    def _command_extra_vars(
+        self, parsed_args: argparse.Namespace
+    ) -> dict[str, object]:
+        """Select the role's rollback path when ``--remove`` is given."""
+        if parsed_args.remove:
+            return {"otel_action": "rollback"}
+        return {}

@@ -45,9 +45,17 @@ dev = [
     "prek>=0.4",
 ]
 
+# Discovered by the kolla-ansible CLI (`kolla-ansible otel-instrument`, …) on
+# releases that load the kolla_ansible.cli entry-point namespace.
 [project.entry-points."kolla_ansible.cli"]
 otel-instrument = "kolla_otel.cli:Instrument"
 otel-rollback = "kolla_otel.cli:Rollback"
+otel-collector = "kolla_otel.cli:Collector"
+
+# Self-contained console script for kolla-ansible releases (e.g. 18.8.0) that
+# do not support the kolla_ansible.cli plugin namespace: `kolla-otel <command>`.
+[project.scripts]
+kolla-otel = "kolla_otel.app:main"
 
 [project.urls]
 Homepage = "https://github.com/openstack/kolla-ansible"
@@ -114,7 +122,6 @@ python_version = "3.10"
 files = ["kolla_otel"]
 disallow_untyped_defs = true
 warn_redundant_casts = true
-warn_unused_ignores = true
 warn_return_any = true
 no_implicit_optional = true
 

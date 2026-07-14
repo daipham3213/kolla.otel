@@ -29,6 +29,12 @@ otel_collector_container_name: "otel_collector"
 otel_collector_config_dir: "/etc/kolla/otel-collector"
 # The contrib image reads its config from this path by default.
 otel_collector_config_container_path: "/etc/otelcol-contrib/config.yaml"
+# Mode of the rendered config file on the host. The contrib image runs as a
+# NON-root user (UID 10001), and the file is bind-mounted read-only, so it must
+# be world-readable (o+r) for the collector to read it — otherwise it exits
+# with "config.yaml: permission denied". Tighten this (e.g. "0640") only if you
+# also chown the file to the collector's UID/GID out of band.
+otel_collector_config_mode: "0644"
 otel_collector_restart_policy: "unless-stopped"
 otel_collector_dimensions: {}
 
@@ -36,67 +42,81 @@ otel_collector_dimensions: {}
 otel_collector_grpc_port: 4317
 otel_collector_http_port: 4318
 
-# --- Collector pipeline configuration ---------------------------------------
-# There are two ways to configure the collector:
+# --- Collector configuration ------------------------------------------------
+# The full collector config is assembled by templates/config.yaml.j2 from the
+# per-section options below (one variable per top-level collector config key),
+# rendered per host and written to `otel_collector_config_dir/config.yaml`.
+# Override any section in globals.yml / group_vars / host_vars for per-host
+# control. The defaults form a functional OTLP-in -> debug-out pipeline (all
+# received telemetry is logged), so the collector runs out of the box; to
+# export to a real backend, add an exporter and list it under each pipeline
+# (see the role README).
 #
-# 1. An operator-provided config FILE, following kolla's node_custom_config
-#    convention (like /etc/kolla/config/nova/nova.conf). Drop a complete
-#    collector config at one of these paths (scanned most-specific first, on
-#    the deploy host); the first that exists REPLACES the built-in config:
-#        <node_custom_config>/otel-collector/<inventory_hostname>/config.yaml
-#        <node_custom_config>/otel-collector/config.yaml
-#    e.g. /etc/kolla/config/otel-collector/config.yaml
+# Each variable maps 1:1 to a top-level section of the collector config:
+#   extensions / receivers / processors / exporters / connectors and, under
+#   `service`, extensions / pipelines / telemetry. Empty optional sections
+#   (extensions, connectors, service.extensions, service.telemetry) are omitted
+#   from the rendered file.
+
+# service::extensions (dict of extension configs).
+otel_collector_extensions: {}
+
+# receivers::* — where telemetry comes in. OTLP over gRPC (4317) and HTTP
+# (4318); the collector binds 0.0.0.0 (reachable over loopback thanks to kolla
+# host networking).
+otel_collector_receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:{{ otel_collector_grpc_port }}"
+      http:
+        endpoint: "0.0.0.0:{{ otel_collector_http_port }}"
+
+# processors::* — applied in each pipeline's `processors` list, in order.
+otel_collector_processors:
+  batch: {}
+  resource:
+    attributes:
+      - key: host.name
+        from_attribute: ""
+        action: upsert
+        value: "${HOSTNAME}"
+
+# exporters::* — where telemetry goes out. The default logs it (`debug`).
+otel_collector_exporters:
+  debug:
+    verbosity: "normal"
+
+# connectors::* (dict of connector configs; empty by default).
+otel_collector_connectors: {}
+
+# service.extensions (list of enabled extension names; empty by default).
+otel_collector_service_extensions: []
+
+# service.pipelines — wire receivers -> processors -> exporters per signal.
+# Lists reference the keys defined in the sections above.
+otel_collector_service_pipelines:
+  traces:
+    receivers: ["otlp"]
+    processors: ["resource", "batch"]
+    exporters: ["debug"]
+  metrics:
+    receivers: ["otlp"]
+    processors: ["resource", "batch"]
+    exporters: ["debug"]
+  logs:
+    receivers: ["otlp"]
+    processors: ["resource", "batch"]
+    exporters: ["debug"]
+
+# service.telemetry — the collector's own metrics/logs config (empty = image
+# defaults).
+otel_collector_service_telemetry: {}
+
+# Optional operator override: a YAML config file (kolla node_custom_config
+# convention) DEEP-MERGED onto the assembled config, most-specific first:
+#     <node_custom_config>/otel-collector/<inventory_hostname>/config.yaml
+#     <node_custom_config>/otel-collector/config.yaml
+# Nested mappings merge (override wins); lists are replaced wholesale.
 otel_collector_custom_config_dir: >-
   {{ node_custom_config | default('/etc/kolla/config') }}/otel-collector
-
-# 2. The inline `otel_collector_config` below (used only when no override file
-#    is found). Rendered verbatim to the collector config file. The default is
-#    a functional OTLP-in -> debug-out pipeline (received telemetry is logged),
-#    so the collector runs out of the box; override it in globals.yml, or use a
-#    file per (1), to export to a real backend (add an otlp/otlphttp exporter
-#    pointing at your observability stack and list it under each pipeline).
-otel_collector_config:
-  receivers:
-    otlp:
-      protocols:
-        grpc:
-          endpoint: "0.0.0.0:{{ otel_collector_grpc_port }}"
-        http:
-          endpoint: "0.0.0.0:{{ otel_collector_http_port }}"
-  processors:
-    batch: { }
-    resource:
-      attributes:
-        - key: host.name
-          from_attribute: ""
-          action: upsert
-          value: "${HOSTNAME}"
-  exporters:
-    debug:
-      verbosity: "normal"
-  service:
-    pipelines:
-      traces:
-        receivers:
-          - "otlp"
-        processors:
-          - "resource"
-          - "batch"
-        exporters:
-          - "debug"
-      metrics:
-        receivers:
-          - "otlp"
-        processors:
-          - "resource"
-          - "batch"
-        exporters:
-          - "debug"
-      logs:
-        receivers:
-          - "otlp"
-        processors:
-          - "resource"
-          - "batch"
-        exporters:
-          - "debug"

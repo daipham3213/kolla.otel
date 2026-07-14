@@ -22,5 +22,4 @@
   serial: "{{ kolla_serial | default('0') }}"
   max_fail_percentage: "{{ kolla_max_fail_percentage | default(100) }}"
   roles:
-    - role: otel_collector
     - role: otel_instrument

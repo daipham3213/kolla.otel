@@ -74,10 +74,15 @@ DEFAULT_MANAGED_ENV_LABEL = "kolla_otel.managed_env"
 DEFAULT_IMAGE_REGISTRY = "ghcr.io/open-telemetry/opentelemetry-operator"
 DEFAULT_IMAGE_VERSION = "latest"
 
-#: Endpoint used when no external collector is configured — the per-host local
-#: collector (deployed by the otel_collector role) reachable over loopback
-#: because kolla uses host networking. Mirrors otel_local_collector_endpoint in
-#: the role defaults (kept in sync by test_instrumentation.py).
+#: Fallback endpoint for the per-host local collector (deployed by the
+#: otel_collector role, reachable because kolla uses host networking) when no
+#: external collector is configured. The role default
+#: (otel_local_collector_endpoint) resolves this host's api_interface address
+#: via Jinja; the action plugin templates that when it is set in globals.yml,
+#: but during a plain deploy where the var is absent it cannot resolve facts in
+#: pure Python, so it falls back to this
+#: loopback literal — which is also what the role default renders to when no
+#: interface address can be resolved (kept in sync by test_instrumentation.py).
 DEFAULT_LOCAL_COLLECTOR_ENDPOINT = "http://127.0.0.1:4317"
 
 #: Per-language agent definition. Mirrors ``otel_language_defaults`` in the

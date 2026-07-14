@@ -22,35 +22,53 @@
         state: directory
         mode: "0770"
 
-    # Prefer an operator-provided config file (kolla node_custom_config
-    # convention), most-specific first; fall back to the inline default.
-    # first_found runs on the deploy host, where these overrides live.
-    - name: "OTel collector | Locate an operator-provided config file"
+    # Assemble the full collector config from the role's otel_collector_*
+    # section variables via the role template, and parse it to a mapping.
+    - name: "OTel collector | Render the collector config from role options"
       ansible.builtin.set_fact:
-        otel_collector_config_src: >-
-          {{ lookup('first_found', dict(files=_otel_collector_config_files,
+        otel_collector_config_base: >-
+          {{ lookup('template', 'config.yaml.j2') | from_yaml }}
+
+    # Locate an optional operator-provided config override (kolla
+    # node_custom_config convention), most-specific first. first_found runs on
+    # the deploy host, where these overrides live.
+    - name: "OTel collector | Locate an operator-provided config override"
+      ansible.builtin.set_fact:
+        otel_collector_config_override_src: >-
+          {{ lookup('first_found', dict(files=_otel_collector_overrides,
                                         skip=true)) | default('', true) }}
       vars:
-        _otel_collector_config_files:
+        _otel_collector_overrides:
           - "{{ otel_collector_custom_config_dir }}/{{ inventory_hostname }}/config.yaml"
           - "{{ otel_collector_custom_config_dir }}/config.yaml"
 
-    # kolla's recreate compares the container spec, not the config file
-    # contents, so a config-only change needs an explicit restart (handler).
-    - name: "OTel collector | Install operator-provided config"
-      when: otel_collector_config_src | length > 0
-      ansible.builtin.copy:
-        src: "{{ otel_collector_config_src }}"
-        dest: "{{ otel_collector_config_dir }}/config.yaml"
-        mode: "0660"
-      notify: Restart otel collector container
+    # Read the override YAML file (from the deploy host) and parse it to a
+    # mapping. Skipped when no override exists.
+    - name: "OTel collector | Read and parse the config override"
+      when: otel_collector_config_override_src | length > 0
+      ansible.builtin.set_fact:
+        otel_collector_config_override: >-
+          {{ lookup('file', otel_collector_config_override_src)
+             | from_yaml }}
 
-    - name: "OTel collector | Render the built-in config"
-      when: otel_collector_config_src | length == 0
+    # Deep-merge the override onto the assembled config: nested mappings merge
+    # and the override wins; lists (e.g. a pipeline's exporters) are replaced
+    # wholesale, so redeclare the whole list for any pipeline you touch.
+    - name: "OTel collector | Merge the override onto the assembled config"
+      ansible.builtin.set_fact:
+        otel_collector_config_final: >-
+          {{ otel_collector_config_base
+             | combine(otel_collector_config_override | default({}, true),
+                       recursive=True) }}
+
+    # Copy the rendered config to the host. kolla's recreate compares the
+    # container spec, not the config file contents, so a config-only change
+    # needs an explicit restart (handler).
+    - name: "OTel collector | Write the collector config"
       ansible.builtin.copy:
-        content: "{{ otel_collector_config | to_nice_yaml(indent=2) }}"
+        content: "{{ otel_collector_config_final | to_nice_yaml(indent=2) }}"
         dest: "{{ otel_collector_config_dir }}/config.yaml"
-        mode: "0660"
+        mode: "{{ otel_collector_config_mode }}"
       notify: Restart otel collector container
 
     - name: "OTel collector | Pull the collector image"
