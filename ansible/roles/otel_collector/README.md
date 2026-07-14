@@ -24,6 +24,17 @@ so the collector is listening before services point at it) and by
 `otel-rollback.yml` (with `otel_action=rollback`, which stops/removes the
 collector and deletes its config).
 
+It can also be run **on its own**, independently of instrumentation, via the
+`otel-collector.yml` playbook / the `kolla-ansible otel-collector` command — so
+operators can deploy and verify the collector first, then instrument later:
+
+```bash
+kolla-ansible otel-collector -i /etc/kolla/inventory            # deploy
+kolla-ansible otel-collector -i /etc/kolla/inventory --remove   # tear down
+```
+
+`--remove` simply passes `otel_action=rollback` to the same role.
+
 ## What it does (local mode)
 
 1. Renders `otel_collector_config` to

@@ -1,0 +1,26 @@
+---
+# Entry playbook run by `kolla-ansible otel-collector`. Deploys ONLY the local
+# OpenTelemetry collector (the otel_collector role), independently of any
+# instrumentation, so operators can stand the collector up first and verify it
+# before pointing services at it with `kolla-ansible otel-instrument`.
+#
+# Installed alongside kolla-ansible's own playbooks under
+# share/kolla-ansible/ansible/, so it inherits group_vars/all.yml
+# (kolla_container_engine, docker_common_options, node_custom_config, …)
+# automatically.
+#
+# The otel_collector role only acts in "local collector" mode — i.e. when no
+# external `otel_exporter_endpoint` is set — and is otherwise a no-op, so this
+# playbook is safe to run whether or not an external collector is configured.
+#
+# Pass `-e otel_action=rollback` (or use `--remove` on the command) to stop and
+# remove a collector deployed this way. Work is independent per host, so hosts
+# run in parallel up to `forks` (ansible.cfg).
+- name: Deploy the local OpenTelemetry collector on OpenStack hosts
+  hosts: "{{ otel_instrument_hosts | default('all') }}"
+  gather_facts: false
+  strategy: "{{ otel_instrument_strategy | default('linear') }}"
+  serial: "{{ kolla_serial | default('0') }}"
+  max_fail_percentage: "{{ kolla_max_fail_percentage | default(100) }}"
+  roles:
+    - role: otel_collector

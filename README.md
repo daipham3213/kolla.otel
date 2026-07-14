@@ -3,8 +3,8 @@
 Zero-code [OpenTelemetry](https://opentelemetry.io/) auto-instrumentation for
 [Kolla Ansible](https://github.com/openstack/kolla-ansible).
 
-`kolla-otel` registers `otel-instrument` and `otel-rollback` commands on the
-`kolla-ansible` CLI. It injects the [`opentelemetry-operator`](https://github.com/open-telemetry/opentelemetry-operator)
+`kolla-otel` registers `otel-instrument`, `otel-rollback` and `otel-collector`
+commands on the `kolla-ansible` CLI. It injects the [`opentelemetry-operator`](https://github.com/open-telemetry/opentelemetry-operator)
 auto-instrumentation agents into OpenStack service containers and configures the
 `OTEL_*` environment needed to export telemetry — **without changing any service
 code or rebuilding any image** — and can cleanly remove it again.
@@ -51,6 +51,7 @@ discovered automatically:
 ```bash
 kolla-ansible otel-instrument --help
 kolla-ansible otel-rollback --help
+kolla-ansible otel-collector --help
 ```
 
 ## Usage
@@ -80,6 +81,19 @@ file at `/etc/kolla/config/otel-collector/config.yaml` (kolla's
 `node_custom_config` convention, per-host override supported) or set
 `otel_collector_config` in `globals.yml`. `otel-rollback` removes the
 collector again.
+
+You can also manage that collector **on its own**, without touching any
+service, using the `otel-collector` command — handy to stand it up and verify
+it before instrumenting, or to run it as a standalone telemetry sink:
+
+```bash
+kolla-ansible otel-collector -i /etc/kolla/inventory            # deploy
+kolla-ansible otel-collector -i /etc/kolla/inventory --remove   # tear down
+```
+
+It runs the `otel_collector` role by itself and, like the automatic path, only
+acts when no external `otel_exporter_endpoint` is set (otherwise it is a
+no-op). A later `otel-instrument` finds the collector already listening.
 
 Alternatively, pass a standalone config file (validated and translated into
 the role's `otel_*` variables):
@@ -170,7 +184,7 @@ The injection logic lives in Ansible; the Python package is a thin driver.
 | --- | --- |
 | `ansible/roles/otel_instrument` | Stages the agent and recreates each container with the OTel env/volume; also rolls it back (see its [README](ansible/roles/otel_instrument/README.md)) |
 | `ansible/roles/otel_collector` | Deploys a per-host local collector when no external endpoint is set (see its [README](ansible/roles/otel_collector/README.md)) |
-| `ansible/otel-instrument.yml` / `ansible/otel-rollback.yml` | Playbooks run by the two commands |
+| `ansible/otel-instrument.yml` / `ansible/otel-rollback.yml` / `ansible/otel-collector.yml` | Playbooks run by the three commands |
 | `ansible/action_plugins/kolla_container.py` | Optional wrapper re-applying instrumentation on every kolla container (re)create |
 | `kolla_otel.config` | Validated configuration model + loader |
 | `kolla_otel.extravars` | Translates the config model into the role's `otel_*` variables |

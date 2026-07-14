@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from kolla_otel import cli as cli_module
-from kolla_otel.cli import Instrument, Rollback
+from kolla_otel.cli import Collector, Instrument, Rollback
 from kolla_otel.exceptions import KollaOtelError
 
 
@@ -27,6 +27,10 @@ def _command() -> Instrument:
 
 def _rollback() -> Rollback:
     return Rollback(app=_FakeApp(), app_args=None)
+
+
+def _collector() -> Collector:
+    return Collector(app=_FakeApp(), app_args=None)
 
 
 @pytest.fixture
@@ -181,3 +185,52 @@ class RollbackCommandTestCase:
             for s in recorder["extra_vars"]["otel_instrument_services"]
         ]
         assert names == ["nova_api", "cinder_api"]
+
+
+class CollectorCommandTestCase:
+    """The standalone ``otel-collector`` command."""
+
+    def test_remove_defaults_to_false(self) -> None:
+        """--remove is opt-in (deploy is the default action)."""
+        args = _collector().get_parser("collector").parse_args([])
+        assert args.remove is False
+
+    def test_deploys_collector_playbook_without_config(self, recorder) -> None:
+        """A plain run deploys via the standalone otel-collector playbook."""
+        cmd = _collector()
+        recorder["install"](cmd)
+        args = cmd.get_parser("collector").parse_args([])
+
+        rc = cmd.take_action(args)
+
+        assert rc == 0
+        assert recorder["playbooks"] == ["/share/otel-collector.yml"]
+        # Deploy is the default: no rollback action injected.
+        assert recorder["extra_vars"] == {}
+
+    def test_remove_selects_rollback_action(self, recorder) -> None:
+        """--remove passes otel_action=rollback to tear the collector down."""
+        cmd = _collector()
+        recorder["install"](cmd)
+        args = cmd.get_parser("collector").parse_args(["--remove"])
+
+        rc = cmd.take_action(args)
+
+        assert rc == 0
+        assert recorder["playbooks"] == ["/share/otel-collector.yml"]
+        assert recorder["extra_vars"] == {"otel_action": "rollback"}
+
+    def test_remove_merges_with_config(self, recorder, config_file) -> None:
+        """--remove and --config combine (rollback action + config vars)."""
+        cmd = _collector()
+        recorder["install"](cmd)
+        args = cmd.get_parser("collector").parse_args(
+            ["--remove", "--config", str(config_file)]
+        )
+
+        rc = cmd.take_action(args)
+
+        assert rc == 0
+        extra = recorder["extra_vars"]
+        assert extra["otel_action"] == "rollback"
+        assert extra["otel_exporter_endpoint"] == "http://c:4317"

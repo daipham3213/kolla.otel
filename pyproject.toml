@@ -48,6 +48,7 @@ dev = [
 [project.entry-points."kolla_ansible.cli"]
 otel-instrument = "kolla_otel.cli:Instrument"
 otel-rollback = "kolla_otel.cli:Rollback"
+otel-collector = "kolla_otel.cli:Collector"
 
 [project.urls]
 Homepage = "https://github.com/openstack/kolla-ansible"
