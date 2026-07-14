@@ -49,13 +49,18 @@ otel_exporter_protocol: "grpc"        # grpc | http/protobuf
 # network, the same interface it resolves service addresses on, defaulting to
 # `network_interface`) rather than loopback, so the endpoint is a routable
 # address. Falls back to 127.0.0.1 if the interface address can't be resolved.
-# The instrument role gathers network facts on demand when this is needed. Keep
-# the port in sync with otel_collector_grpc_port.
+# The instrument role gathers network facts on demand when this is needed.
+#
+# The port follows otel_exporter_protocol: the collector's HTTP port
+# (otel_collector_http_port, 4318) for http/protobuf, else its gRPC port
+# (otel_collector_grpc_port, 4317). Keep both in sync with the collector role.
 otel_local_collector_endpoint: >-
   http://{{ (ansible_facts[api_interface | default('lo', true)
   | replace('-', '_')] | default({}, true)).get(api_address_family
   | default(network_address_family | default('ipv4', true), true), {}).get('address', '127.0.0.1')
-  | put_address_in_context('url') }}:{{ otel_collector_grpc_port | default(4317, true) }}
+  | put_address_in_context('url') }}:{{ otel_collector_http_port | default(4318, true)
+  if (otel_exporter_protocol | default('grpc', true)) == 'http/protobuf'
+  else otel_collector_grpc_port | default(4317, true) }}
 
 otel_traces_exporter: "otlp"
 otel_metrics_exporter: "otlp"
