@@ -1,0 +1,24 @@
+---
+# Entry playbook run by `kolla-ansible otel-rollback`. The mirror image of
+# otel-instrument.yml: it runs the same otel_instrument role with
+# `otel_action=rollback`, which strips the injected OTEL_* environment, drops
+# the agent bind-mount and the managed-env label, and recreates each affected
+# container back to its pre-instrumentation state.
+#
+# Only containers actually present on a host — and only those the role
+# previously instrumented — are touched, so a single run is safe across
+# controllers and compute nodes and is idempotent (a second run is a no-op).
+#
+# By default the staged agent artifacts under otel_host_lib_path are also
+# removed once nothing mounts them; pass `-e otel_rollback_remove_agent=false`
+# to keep them for a quick re-instrument.
+- name: Roll back OpenTelemetry auto-instrumentation from OpenStack containers
+  hosts: "{{ otel_instrument_hosts | default('all') }}"
+  gather_facts: false
+  strategy: "{{ otel_instrument_strategy | default('linear') }}"
+  serial: "{{ kolla_serial | default('0') }}"
+  max_fail_percentage: "{{ kolla_max_fail_percentage | default(100) }}"
+  roles:
+    - role: otel_instrument
+      vars:
+        otel_action: rollback

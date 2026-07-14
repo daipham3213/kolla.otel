@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from kolla_otel import cli as cli_module
-from kolla_otel.cli import Instrument
+from kolla_otel.cli import Instrument, Rollback
 from kolla_otel.exceptions import KollaOtelError
 
 
@@ -120,6 +120,43 @@ def test_take_action_invalid_config_raises(recorder, tmp_path) -> None:
     args = cmd.get_parser("instrument").parse_args(["--config", str(bad)])
     with pytest.raises(KollaOtelError):
         cmd.take_action(args)
+
+
+def _rollback() -> Rollback:
+    return Rollback(app=_FakeApp(), app_args=None)
+
+
+def test_rollback_runs_rollback_playbook_without_config(recorder) -> None:
+    """Rollback runs the otel-rollback playbook, not the instrument one."""
+    cmd = _rollback()
+    recorder["install"](cmd)
+    args = cmd.get_parser("rollback").parse_args([])
+
+    rc = cmd.take_action(args)
+
+    assert rc == 0
+    assert recorder["playbooks"] == ["/share/otel-rollback.yml"]
+    assert recorder["extra_vars"] == {}
+
+
+def test_rollback_translates_config_to_extra_vars(
+    recorder, config_file
+) -> None:
+    """Rollback takes the same --config to target what was instrumented."""
+    cmd = _rollback()
+    recorder["install"](cmd)
+    args = cmd.get_parser("rollback").parse_args(
+        ["--config", str(config_file)]
+    )
+
+    rc = cmd.take_action(args)
+
+    assert rc == 0
+    names = [
+        s["container_name"]
+        for s in recorder["extra_vars"]["otel_instrument_services"]
+    ]
+    assert names == ["nova_api", "cinder_api"]
 
 
 def test_load_document_reads_yaml(config_file) -> None:

@@ -1,5 +1,5 @@
 ---
-# Entry playbook run by `kolla-ansible instrument`. Installed alongside
+# Entry playbook run by `kolla-ansible otel-instrument`. Installed alongside
 # kolla-ansible's own playbooks under share/kolla-ansible/ansible/, so it
 # inherits group_vars/all.yml (kolla_container_engine, docker_common_options,
 # …) automatically.

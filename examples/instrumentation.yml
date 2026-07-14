@@ -1,8 +1,15 @@
 # Example kolla-otel instrumentation configuration.
 #
-# Feed this to the CLI:
-#     kolla-ansible instrument --config examples/instrumentation.yml \
-#         --output-dir /etc/kolla
+# Apply it:
+#     kolla-ansible otel-instrument --config examples/instrumentation.yml
+#
+# Roll it back (same file — strips the injected env/volume/label and recreates
+# each container back to its pre-instrumentation state, idempotently):
+#     kolla-ansible otel-rollback --config examples/instrumentation.yml
+#
+# To keep instrumentation applied across `kolla-ansible deploy`/`reconfigure`,
+# set `otel_auto_instrument: true` (with the otel_* config) in globals.yml;
+# see the otel_instrument role README.
 #
 otel:
   # OTLP collector reachable from the OpenStack service containers.
