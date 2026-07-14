@@ -65,7 +65,9 @@ class OTelConfig:
     """Deployment-wide OpenTelemetry export and image settings.
 
     :param exporter_endpoint: OTLP collector endpoint
-        (e.g. ``http://otel-collector:4317``).
+        (e.g. ``http://otel-collector:4317``). Leave empty to select
+        "local collector" mode, in which a per-host collector is deployed and
+        used automatically.
     :param exporter_protocol: OTLP transport, ``"grpc"`` or
         ``"http/protobuf"``.
     :param image_registry: Registry/repository prefix that hosts the
@@ -85,7 +87,7 @@ class OTelConfig:
         service, merged beneath per-service attributes.
     """
 
-    exporter_endpoint: str
+    exporter_endpoint: str = ""
     exporter_protocol: str = "grpc"
     image_registry: str = "ghcr.io/open-telemetry/opentelemetry-operator"
     image_version: str = "latest"
@@ -102,8 +104,9 @@ class OTelConfig:
     _VALID_PROTOCOLS = ("grpc", "http/protobuf")
 
     def __post_init__(self) -> None:
-        if not self.exporter_endpoint:
-            raise ConfigurationError("'exporter_endpoint' must not be empty.")
+        # An empty endpoint is valid: it selects "local collector" mode, where
+        # the otel_collector role deploys a per-host collector and the role
+        # targets it. Only the protocol is validated here.
         if self.exporter_protocol not in self._VALID_PROTOCOLS:
             raise ConfigurationError(
                 f"'exporter_protocol' must be one of "
@@ -187,11 +190,10 @@ def load_config(
     if not isinstance(otel_section, Mapping):
         raise ConfigurationError("Missing required 'otel' mapping section.")
 
-    endpoint = otel_section.get("exporter_endpoint")
+    # Optional: an absent/empty endpoint selects local-collector mode.
+    endpoint = otel_section.get("exporter_endpoint", "")
     if not isinstance(endpoint, str):
-        raise ConfigurationError(
-            "'otel.exporter_endpoint' is required and must be a string."
-        )
+        raise ConfigurationError("'otel.exporter_endpoint' must be a string.")
 
     propagators_raw = otel_section.get("propagators")
     if propagators_raw is None:

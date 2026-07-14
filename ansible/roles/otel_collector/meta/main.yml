@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: otel_collector
+  author: kolla-otel
+  description: >-
+    Deploy a local opentelemetry-collector-contrib container on each Kolla
+    Ansible host to serve as the OTLP endpoint for instrumented services when
+    no external collector is configured.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - kolla
+    - openstack
+    - opentelemetry
+    - observability
+dependencies: []

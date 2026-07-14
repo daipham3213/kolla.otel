@@ -76,13 +76,16 @@ include = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["kolla_otel/tests"]
+testpaths = ["tests"]
 addopts = "-ra"
+# OpenStack-style test classes are named "<Unit>TestCase"; collect them
+# alongside pytest's default "Test*".
+python_classes = ["Test*", "*TestCase"]
 
 [tool.ruff]
 line-length = 79
 target-version = "py310"
-src = ["kolla_otel", "examples"]
+src = ["kolla_otel", "tests", "examples"]
 
 [tool.ruff.lint]
 select = [
@@ -109,7 +112,6 @@ fixture-parentheses = false
 [tool.mypy]
 python_version = "3.10"
 files = ["kolla_otel"]
-exclude = ["kolla_otel/tests/"]
 disallow_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
@@ -122,7 +124,7 @@ ignore_missing_imports = true
 
 [tool.coverage.run]
 source = ["kolla_otel"]
-omit = ["kolla_otel/tests/*"]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 show_missing = true

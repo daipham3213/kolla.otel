@@ -34,6 +34,7 @@ __all__ = [
     "DEFAULT_MANAGED_ENV_LABEL",
     "DEFAULT_IMAGE_REGISTRY",
     "DEFAULT_IMAGE_VERSION",
+    "DEFAULT_LOCAL_COLLECTOR_ENDPOINT",
     "deep_merge",
     "resolve_language",
     "resource_attributes",
@@ -72,6 +73,12 @@ DEFAULT_MANAGED_ENV_LABEL = "kolla_otel.managed_env"
 #: role defaults (kept in sync by test_instrumentation.py).
 DEFAULT_IMAGE_REGISTRY = "ghcr.io/open-telemetry/opentelemetry-operator"
 DEFAULT_IMAGE_VERSION = "latest"
+
+#: Endpoint used when no external collector is configured — the per-host local
+#: collector (deployed by the otel_collector role) reachable over loopback
+#: because kolla uses host networking. Mirrors otel_local_collector_endpoint in
+#: the role defaults (kept in sync by test_instrumentation.py).
+DEFAULT_LOCAL_COLLECTOR_ENDPOINT = "http://127.0.0.1:4317"
 
 #: Per-language agent definition. Mirrors ``otel_language_defaults`` in the
 #: role's ``defaults/main.yml`` (kept in sync by test_instrumentation.py).

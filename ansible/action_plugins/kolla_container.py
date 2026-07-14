@@ -150,16 +150,19 @@ class ActionModule(ActionBase):
             display.vvv("otel: task has no container name -> passthrough")
             return module_args
 
-        # Gate 4: no exporter endpoint -> nothing to instrument.
+        # Resolve the exporter endpoint: an external one if configured,
+        # otherwise the per-host local collector (deployed by the
+        # otel_collector role). It is therefore always well-defined.
         endpoint = str(
             self._var(task_vars, "otel_exporter_endpoint", "") or ""
-        )
-        if not endpoint:
-            display.vvv(
-                f"otel: '{label}': otel_exporter_endpoint not set "
-                "-> passthrough"
+        ) or str(
+            self._var(
+                task_vars,
+                "otel_local_collector_endpoint",
+                instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT,
             )
-            return module_args
+            or instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
+        )
 
         # Gate 5: this container must be a configured target.
         services = self._var(task_vars, "otel_instrument_services", None)
@@ -204,11 +207,14 @@ class ActionModule(ActionBase):
             )
             return module_args
 
-        # Build the managed OTEL_* environment for this service.
+        # Build the managed OTEL_* environment for this service. The endpoint
+        # is the resolved one (external or local collector), not the raw
+        # (possibly empty) otel_exporter_endpoint var.
         common_env = {
             env_key: str(self._var(task_vars, var, instr.SCALAR_DEFAULTS[var]))
             for env_key, var in instr.COMMON_ENV_MAP.items()
         }
+        common_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
         attrs = instr.resource_attributes(
             str(self._var(task_vars, "otel_service_namespace", "openstack")),
             str(self._var(task_vars, "otel_deployment_environment", "") or ""),

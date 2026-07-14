@@ -1,0 +1,101 @@
+---
+# Deploys (or, on rollback, removes) a local opentelemetry-collector-contrib
+# container on each host. Included via the otel-instrument / otel-rollback
+# playbooks. Only acts in "local collector" mode — i.e. when the operator has
+# not set an external `otel_exporter_endpoint`.
+
+- name: "OTel collector | Decide whether a local collector is needed"
+  ansible.builtin.set_fact:
+    otel_collector_local_mode: >-
+      {{ (otel_exporter_endpoint | default('') | length) == 0 }}
+
+# --- Deploy (instrument) ----------------------------------------------------
+- name: "OTel collector | Deploy local collector"
+  when:
+    - (otel_action | default('instrument')) == 'instrument'
+    - otel_collector_local_mode | bool
+  become: true
+  block:
+    - name: "OTel collector | Ensure config directory exists"
+      ansible.builtin.file:
+        path: "{{ otel_collector_config_dir }}"
+        state: directory
+        mode: "0770"
+
+    # Prefer an operator-provided config file (kolla node_custom_config
+    # convention), most-specific first; fall back to the inline default.
+    # first_found runs on the deploy host, where these overrides live.
+    - name: "OTel collector | Locate an operator-provided config file"
+      ansible.builtin.set_fact:
+        otel_collector_config_src: >-
+          {{ lookup('first_found', dict(files=_otel_collector_config_files,
+                                        skip=true)) | default('', true) }}
+      vars:
+        _otel_collector_config_files:
+          - "{{ otel_collector_custom_config_dir }}/{{ inventory_hostname }}/config.yaml"
+          - "{{ otel_collector_custom_config_dir }}/config.yaml"
+
+    # kolla's recreate compares the container spec, not the config file
+    # contents, so a config-only change needs an explicit restart (handler).
+    - name: "OTel collector | Install operator-provided config"
+      when: otel_collector_config_src | length > 0
+      ansible.builtin.copy:
+        src: "{{ otel_collector_config_src }}"
+        dest: "{{ otel_collector_config_dir }}/config.yaml"
+        mode: "0660"
+      notify: Restart otel collector container
+
+    - name: "OTel collector | Render the built-in config"
+      when: otel_collector_config_src | length == 0
+      ansible.builtin.copy:
+        content: "{{ otel_collector_config | to_nice_yaml(indent=2) }}"
+        dest: "{{ otel_collector_config_dir }}/config.yaml"
+        mode: "0660"
+      notify: Restart otel collector container
+
+    - name: "OTel collector | Pull the collector image"
+      ansible.builtin.command:
+        argv:
+          - "{{ kolla_container_engine }}"
+          - pull
+          - "{{ otel_collector_image }}"
+      register: otel_collector_pull
+      changed_when: >-
+        'Downloaded newer image' in otel_collector_pull.stdout
+        or 'Writing manifest' in otel_collector_pull.stdout
+
+    - name: "OTel collector | Create or restart the collector container"
+      kolla_container:
+        action: recreate_or_restart_container
+        common_options: "{{ docker_common_options }}"
+        name: "{{ otel_collector_container_name }}"
+        image: "{{ otel_collector_image }}"
+        restart_policy: "{{ otel_collector_restart_policy }}"
+        dimensions: "{{ otel_collector_dimensions }}"
+        volumes:
+          - "{{ otel_collector_config_dir }}/config.yaml:{{ otel_collector_config_container_path }}:ro"
+
+# --- Remove (rollback) ------------------------------------------------------
+- name: "OTel collector | Remove local collector"
+  when: (otel_action | default('instrument')) == 'rollback'
+  become: true
+  block:
+    - name: "OTel collector | Check whether the collector is present"
+      kolla_container_facts:
+        container_engine: "{{ kolla_container_engine }}"
+        action: get_containers
+        name:
+          - "{{ otel_collector_container_name }}"
+      register: otel_collector_present
+
+    - name: "OTel collector | Stop and remove the collector container"
+      when: otel_collector_container_name in otel_collector_present.containers
+      kolla_container:
+        action: stop_and_remove_container
+        common_options: "{{ docker_common_options }}"
+        name: "{{ otel_collector_container_name }}"
+
+    - name: "OTel collector | Remove the collector config directory"
+      ansible.builtin.file:
+        path: "{{ otel_collector_config_dir }}"
+        state: absent

@@ -34,9 +34,19 @@ otel_rollback_remove_agent: true
 otel_auto_instrument: false
 
 # --- OTLP export configuration ---------------------------------------------
-# The collector endpoint reachable from inside the service containers.
-otel_exporter_endpoint: ""            # REQUIRED, e.g. http://otel-collector:4317
+# The collector endpoint reachable from inside the service containers. Leave it
+# empty to run in "local collector" mode: the otel_collector role deploys an
+# opentelemetry-collector-contrib container on each host and instrumentation
+# targets `otel_local_collector_endpoint` below. Set it to point at an external
+# collector instead (e.g. http://otel-collector:4317), which disables the
+# local collector.
+otel_exporter_endpoint: ""
 otel_exporter_protocol: "grpc"        # grpc | http/protobuf
+
+# Endpoint used when otel_exporter_endpoint is empty (local collector mode).
+# kolla uses host networking, so the per-host collector is reachable on
+# loopback. Keep the port in sync with otel_collector_grpc_port.
+otel_local_collector_endpoint: "http://127.0.0.1:4317"
 
 otel_traces_exporter: "otlp"
 otel_metrics_exporter: "otlp"

@@ -13,15 +13,13 @@
       'otel_action' must be 'instrument' or 'rollback', got
       '{{ otel_action }}'.
 
-- name: Validate OpenTelemetry configuration
-  when: otel_action == 'instrument'
-  run_once: true
-  ansible.builtin.assert:
-    that:
-      - otel_exporter_endpoint | length > 0
-    fail_msg: >-
-      'otel_exporter_endpoint' is required. Set it in globals.yml or pass a
-      config file to `kolla-ansible otel-instrument --config`.
+# When no external collector is configured, target the per-host local
+# collector (deployed by the otel_collector role). This makes the exporter
+# endpoint always well-defined, so there is nothing left to validate.
+- name: Default the exporter endpoint to the local collector when unset
+  when: otel_exporter_endpoint | length == 0
+  ansible.builtin.set_fact:
+    otel_exporter_endpoint: "{{ otel_local_collector_endpoint }}"
 
 - name: Validate every targeted service maps to a known language
   run_once: true

@@ -40,7 +40,6 @@ def to_extra_vars(
         consumed by the ``otel_instrument`` role's defaults.
     """
     extra_vars: dict[str, Any] = {
-        "otel_exporter_endpoint": config.exporter_endpoint,
         "otel_exporter_protocol": config.exporter_protocol,
         "otel_traces_exporter": config.traces_exporter,
         "otel_metrics_exporter": config.metrics_exporter,
@@ -52,6 +51,11 @@ def to_extra_vars(
         "otel_image_registry": config.image_registry,
         "otel_image_version": config.image_version,
     }
+    # Only pin the endpoint when one is given; an empty endpoint means
+    # "local collector mode", which the role/plugin default handles, so we omit
+    # the var rather than overriding globals.yml with an empty value.
+    if config.exporter_endpoint:
+        extra_vars["otel_exporter_endpoint"] = config.exporter_endpoint
     if config.deployment_environment is not None:
         extra_vars["otel_deployment_environment"] = (
             config.deployment_environment
