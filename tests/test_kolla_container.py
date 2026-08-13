@@ -79,8 +79,9 @@ def _plugin(task_args, executed_sink, stage_ok=True):
 
 @pytest.fixture(autouse=True)
 def _reset_stage_cache():
-    """The per-run staging cache is module-global; clear it between tests."""
+    """The per-run caches are module-global; clear them between tests."""
     _PLUGIN_MOD._STAGED.clear()
+    _PLUGIN_MOD._ENDPOINTS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -151,6 +152,74 @@ class KollaContainerActionTestCase:
         _plugin(_TARGET_ARGS, sink).run(task_vars=dict(_ENABLED))
         env = sink["args"]["environment"]
         assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4317"
+
+    def test_local_collector_uses_http_port_for_http_protocol(self):
+        """Like the role, the local-collector port follows the protocol: the
+        collector's HTTP receiver (4318) for http/protobuf, not gRPC (4317)."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(
+            task_vars={
+                "otel_auto_instrument": True,
+                "otel_exporter_protocol": "http/protobuf",
+            }
+        )
+        env = sink["args"]["environment"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:4318"
+
+    def test_local_collector_uses_api_interface_address(self):
+        """With network facts present, the endpoint targets the routable
+        api_interface address (not loopback), mirroring the role default."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(
+            task_vars={
+                "otel_auto_instrument": True,
+                "api_interface": "eth0",
+                "ansible_facts": {"eth0": {"ipv4": {"address": "10.0.0.5"}}},
+            }
+        )
+        env = sink["args"]["environment"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://10.0.0.5:4317"
+
+    def test_local_collector_gathers_network_facts_on_demand(self):
+        """When facts are absent (gather_facts:false), the plugin gathers the
+        network subset on demand to resolve the api_interface address."""
+        sink = {}
+        plugin = _plugin(_TARGET_ARGS, sink)
+        inner = plugin._execute_module
+        gathered = []
+
+        def _with_setup(module_name, module_args, task_vars):
+            if module_name == "setup":
+                gathered.append(module_args.get("gather_subset"))
+                return {
+                    "ansible_facts": {
+                        "eth0": {"ipv4": {"address": "10.9.9.9"}}
+                    }
+                }
+            return inner(module_name, module_args, task_vars)
+
+        plugin._execute_module = _with_setup
+        plugin.run(
+            task_vars={"otel_auto_instrument": True, "api_interface": "eth0"}
+        )
+        assert gathered == [["!all", "!min", "network"]]
+        env = sink["args"]["environment"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://10.9.9.9:4317"
+
+    def test_local_collector_endpoint_override_is_honored(self):
+        """An explicit otel_local_collector_endpoint (globals.yml) wins
+        verbatim, exactly as the role's set_fact does."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(
+            task_vars={
+                "otel_auto_instrument": True,
+                "otel_local_collector_endpoint": "http://collector.local:4317",
+            }
+        )
+        env = sink["args"]["environment"]
+        assert (
+            env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector.local:4317"
+        )
 
     def test_enabled_non_target_container_is_passthrough(self):
         sink = {}

@@ -56,6 +56,11 @@ display = Display()
 # instead of on every kolla_container task that touches it.
 _STAGED: set = set()
 
+# Per-process cache of the resolved local-collector endpoint per host, so the
+# network facts are gathered at most once per host per run rather than on every
+# instrumented kolla_container task. Keyed by ``inventory_hostname``.
+_ENDPOINTS: dict = {}
+
 # Emitted once, when Ansible loads this plugin (i.e. it is on the
 # action-plugin search path — normally because it was installed adjacent to
 # kolla's site.yml). Run any kolla-ansible command with -vvv and grep for this
@@ -107,6 +112,99 @@ class ActionModule(ActionBase):
             return default
         return self._resolve(task_vars.get(name))
 
+    def _local_collector_endpoint(self, task_vars):
+        """Resolve this host's local-collector endpoint like the role.
+
+        Mirrors the ``otel_local_collector_endpoint`` role default: an operator
+        override (e.g. in globals.yml) wins verbatim; otherwise the endpoint is
+        ``http://<api_interface address>:<port>`` with the port chosen by
+        ``otel_exporter_protocol`` (``http/protobuf`` -> the collector's HTTP
+        port, else its gRPC port), gathering network facts on demand when they
+        are absent and falling back to loopback when the address cannot be
+        resolved. Cached per host for the run.
+        """
+        from kolla_otel import instrumentation as instr
+
+        # An operator-set endpoint (globals.yml / group_vars) wins verbatim,
+        # exactly as the role's set_fact does when the var is overridden.
+        override = self._var(task_vars, "otel_local_collector_endpoint", None)
+        if override:
+            return str(override)
+
+        host = task_vars.get("inventory_hostname", "")
+        if host in _ENDPOINTS:
+            return _ENDPOINTS[host]
+
+        protocol = str(
+            self._var(
+                task_vars,
+                "otel_exporter_protocol",
+                instr.SCALAR_DEFAULTS["otel_exporter_protocol"],
+            )
+            or instr.SCALAR_DEFAULTS["otel_exporter_protocol"]
+        )
+        grpc_port = self._var(
+            task_vars,
+            "otel_collector_grpc_port",
+            instr.DEFAULT_COLLECTOR_GRPC_PORT,
+        )
+        http_port = self._var(
+            task_vars,
+            "otel_collector_http_port",
+            instr.DEFAULT_COLLECTOR_HTTP_PORT,
+        )
+        endpoint = instr.local_collector_endpoint(
+            self._api_interface_address(task_vars),
+            protocol,
+            grpc_port,
+            http_port,
+        )
+        _ENDPOINTS[host] = endpoint
+        return endpoint
+
+    def _api_interface_address(self, task_vars):
+        """Return this host's api_interface address, or ``None``.
+
+        Mirrors the role's endpoint fact lookup (and its on-demand
+        ``Gather network facts`` step): read the address of ``api_interface``
+        (falling back to ``network_interface``) from network facts, gathering
+        them when the play ran with ``gather_facts: false`` and they are
+        absent. Returns ``None`` when no interface is configured or the address
+        cannot be resolved, so the caller falls back to loopback.
+        """
+        from kolla_otel import instrumentation as instr
+
+        interface = str(
+            self._var(task_vars, "api_interface", None)
+            or self._var(task_vars, "network_interface", None)
+            or ""
+        )
+        if not interface:
+            return None
+        family = str(
+            self._var(task_vars, "api_address_family", None)
+            or self._var(task_vars, "network_address_family", None)
+            or "ipv4"
+        )
+
+        facts = task_vars.get("ansible_facts") or {}
+        address = instr.interface_address(facts, interface, family)
+        if address:
+            return address
+
+        # Facts absent (e.g. a play with gather_facts:false, as the role's own
+        # play runs): gather the network subset on demand, like the role. Never
+        # fatal — on failure or in check mode we return None -> loopback.
+        if self._task.check_mode:
+            return None
+        setup = self._module(
+            "setup",
+            {"gather_subset": ["!all", "!min", "network"]},
+            task_vars,
+        )
+        facts = setup.get("ansible_facts") or {}
+        return instr.interface_address(facts, interface, family)
+
     def _maybe_instrument(self, module_args, task_vars):
         """Return ``module_args`` augmented with OTEL iff every gate passes.
 
@@ -150,20 +248,6 @@ class ActionModule(ActionBase):
             display.vvv("otel: task has no container name -> passthrough")
             return module_args
 
-        # Resolve the exporter endpoint: an external one if configured,
-        # otherwise the per-host local collector (deployed by the
-        # otel_collector role). It is therefore always well-defined.
-        endpoint = str(
-            self._var(task_vars, "otel_exporter_endpoint", "") or ""
-        ) or str(
-            self._var(
-                task_vars,
-                "otel_local_collector_endpoint",
-                instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT,
-            )
-            or instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
-        )
-
         # Gate 5: this container must be a configured target.
         services = self._var(task_vars, "otel_instrument_services", None)
         if services is None:
@@ -206,6 +290,15 @@ class ActionModule(ActionBase):
                 f"otel: '{name}': agent not staged on host -> passthrough"
             )
             return module_args
+
+        # Resolve the exporter endpoint: an external one if configured,
+        # otherwise the per-host local collector (deployed by the
+        # otel_collector role). It is therefore always well-defined. Resolved
+        # only now — after the target/language/staging gates — so we never
+        # gather network facts for a container we are not going to instrument.
+        endpoint = str(
+            self._var(task_vars, "otel_exporter_endpoint", "") or ""
+        ) or self._local_collector_endpoint(task_vars)
 
         # Build the managed OTEL_* environment for this service. The endpoint
         # is the resolved one (external or local collector), not the raw

@@ -76,6 +76,24 @@ class RoleDefaultsDriftTestCase:
         env.filters["put_address_in_context"] = lambda addr, ctx=None: addr
         rendered = env.from_string(expr).render(ansible_facts={})
         assert rendered == instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
+        # Default (gRPC) protocol -> gRPC port; the Python fallback agrees.
+        assert instr.local_collector_endpoint(None, "grpc") == rendered
+
+    def test_local_collector_endpoint_ports_match_role(self) -> None:
+        """The protocol->port choice mirrors the role expression: the HTTP
+        receiver port for http/protobuf, else the gRPC port."""
+        from jinja2 import Environment
+
+        expr = _role_defaults()["otel_local_collector_endpoint"]
+        env = Environment()
+        env.filters["put_address_in_context"] = lambda addr, ctx=None: addr
+        rendered_http = env.from_string(expr).render(
+            ansible_facts={}, otel_exporter_protocol="http/protobuf"
+        )
+        assert rendered_http == instr.local_collector_endpoint(
+            None, "http/protobuf"
+        )
+        assert rendered_http.endswith(f":{instr.DEFAULT_COLLECTOR_HTTP_PORT}")
 
 
 class InstrumentationTestCase:
@@ -176,6 +194,54 @@ class InstrumentationTestCase:
             == "/etc/kolla/opentelemetry/python:/mnt:ro"
         )
         assert instr.managed_label_value({"B": "1", "A": "2"}) == "A,B"
+
+    def test_collector_endpoint_port_by_protocol(self) -> None:
+        assert instr.collector_endpoint_port("grpc") == 4317
+        assert instr.collector_endpoint_port("http/protobuf") == 4318
+        # unknown protocols default to the gRPC port
+        assert instr.collector_endpoint_port("weird") == 4317
+        # explicit ports override the defaults
+        assert instr.collector_endpoint_port("http/protobuf", 5317, 5318) == (
+            5318
+        )
+
+    def test_address_in_url_context_brackets_ipv6(self) -> None:
+        assert instr.address_in_url_context("10.0.0.5") == "10.0.0.5"
+        assert instr.address_in_url_context("host") == "host"
+        assert instr.address_in_url_context("fe80::1") == "[fe80::1]"
+        # already bracketed is left untouched
+        assert instr.address_in_url_context("[fe80::1]") == "[fe80::1]"
+
+    def test_interface_address_lookup(self) -> None:
+        facts = {
+            "eth0": {"ipv4": {"address": "10.0.0.5"}},
+            "br_ex": {"ipv6": {"address": "fe80::1"}},
+        }
+        assert instr.interface_address(facts, "eth0") == "10.0.0.5"
+        # hyphenated interfaces map to the underscored fact key
+        assert instr.interface_address(facts, "br-ex", "ipv6") == "fe80::1"
+        # missing interface / family / address -> None
+        assert instr.interface_address(facts, "eth1") is None
+        assert instr.interface_address(facts, "eth0", "ipv6") is None
+        assert instr.interface_address({}, "eth0") is None
+        assert instr.interface_address(facts, "") is None
+
+    def test_local_collector_endpoint_builds_url(self) -> None:
+        assert instr.local_collector_endpoint("10.0.0.5", "grpc") == (
+            "http://10.0.0.5:4317"
+        )
+        assert (
+            instr.local_collector_endpoint("10.0.0.5", "http/protobuf")
+            == "http://10.0.0.5:4318"
+        )
+        # IPv6 address is bracketed
+        assert instr.local_collector_endpoint("fe80::1", "grpc") == (
+            "http://[fe80::1]:4317"
+        )
+        # no address -> loopback fallback
+        assert instr.local_collector_endpoint(None, "grpc") == (
+            instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
+        )
 
     def test_find_service_by_container_name_and_fallback(self) -> None:
         services = [

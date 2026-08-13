@@ -34,6 +34,8 @@ __all__ = [
     "DEFAULT_MANAGED_ENV_LABEL",
     "DEFAULT_IMAGE_REGISTRY",
     "DEFAULT_IMAGE_VERSION",
+    "DEFAULT_COLLECTOR_GRPC_PORT",
+    "DEFAULT_COLLECTOR_HTTP_PORT",
     "DEFAULT_LOCAL_COLLECTOR_ENDPOINT",
     "deep_merge",
     "resolve_language",
@@ -46,6 +48,10 @@ __all__ = [
     "apply_agent_mount",
     "managed_label_value",
     "find_service",
+    "collector_endpoint_port",
+    "address_in_url_context",
+    "interface_address",
+    "local_collector_endpoint",
 ]
 
 #: ``kolla_container`` actions whose desired spec we augment. Every other
@@ -74,16 +80,26 @@ DEFAULT_MANAGED_ENV_LABEL = "kolla_otel.managed_env"
 DEFAULT_IMAGE_REGISTRY = "ghcr.io/open-telemetry/opentelemetry-operator"
 DEFAULT_IMAGE_VERSION = "latest"
 
+#: Local collector listener ports. Mirror otel_collector_grpc_port /
+#: otel_collector_http_port (the otel_collector role defaults, also the
+#: inline fallbacks in otel_local_collector_endpoint). The port the
+#: instrumented services export to is chosen from these by protocol.
+DEFAULT_COLLECTOR_GRPC_PORT = 4317
+DEFAULT_COLLECTOR_HTTP_PORT = 4318
+
 #: Fallback endpoint for the per-host local collector (deployed by the
 #: otel_collector role, reachable because kolla uses host networking) when no
-#: external collector is configured. The role default
-#: (otel_local_collector_endpoint) resolves this host's api_interface address
-#: via Jinja; the action plugin templates that when it is set in globals.yml,
-#: but during a plain deploy where the var is absent it cannot resolve facts in
-#: pure Python, so it falls back to this
-#: loopback literal — which is also what the role default renders to when no
-#: interface address can be resolved (kept in sync by test_instrumentation.py).
-DEFAULT_LOCAL_COLLECTOR_ENDPOINT = "http://127.0.0.1:4317"
+#: external collector is configured and this host's api_interface address
+#: cannot be resolved. Mirrors what the role default
+#: (otel_local_collector_endpoint) renders to under the default gRPC protocol
+#: when no interface address is available (kept in sync by
+#: test_instrumentation.py). The action plugin normally resolves the routable
+#: api_interface address (gathering network facts on demand, like the role) and
+#: the protocol-appropriate port via :func:`local_collector_endpoint`; this
+#: literal is only the last-resort fallback.
+DEFAULT_LOCAL_COLLECTOR_ENDPOINT = (
+    f"http://127.0.0.1:{DEFAULT_COLLECTOR_GRPC_PORT}"
+)
 
 #: Per-language agent definition. Mirrors ``otel_language_defaults`` in the
 #: role's ``defaults/main.yml`` (kept in sync by test_instrumentation.py).
@@ -384,3 +400,69 @@ def find_service(
         if candidate == container_name:
             return dict(service)
     return None
+
+
+def collector_endpoint_port(
+    protocol: str,
+    grpc_port: int = DEFAULT_COLLECTOR_GRPC_PORT,
+    http_port: int = DEFAULT_COLLECTOR_HTTP_PORT,
+) -> int:
+    """Return the local collector port for the given exporter protocol.
+
+    Mirrors the port selection in the role's ``otel_local_collector_endpoint``
+    default: ``http/protobuf`` targets the collector's HTTP receiver, anything
+    else (``grpc``) its gRPC receiver.
+    """
+    if protocol == "http/protobuf":
+        return http_port
+    return grpc_port
+
+
+def address_in_url_context(address: str) -> str:
+    """Wrap an IPv6 literal in brackets for a URL authority; else unchanged.
+
+    Mirrors kolla's ``put_address_in_context(addr, 'url')`` filter, which the
+    role default applies to the resolved interface address so an IPv6 endpoint
+    is well-formed (``http://[fe80::1]:4317``).
+    """
+    if address and ":" in address and not address.startswith("["):
+        return f"[{address}]"
+    return address
+
+
+def interface_address(
+    ansible_facts: Mapping[str, Any],
+    interface: str,
+    address_family: str = "ipv4",
+) -> str | None:
+    """Return an interface's address from Ansible network facts, or ``None``.
+
+    Mirrors the fact lookup in the role's ``otel_local_collector_endpoint``:
+    ``ansible_facts[<interface, '-'->'_'>][<address_family>]['address']``.
+    Returns ``None`` when the interface, family or address is absent, so the
+    caller can fall back to loopback.
+    """
+    if not interface:
+        return None
+    fact = (ansible_facts or {}).get(interface.replace("-", "_")) or {}
+    family = fact.get(address_family) or {}
+    address = family.get("address")
+    return address or None
+
+
+def local_collector_endpoint(
+    address: str | None,
+    protocol: str,
+    grpc_port: int = DEFAULT_COLLECTOR_GRPC_PORT,
+    http_port: int = DEFAULT_COLLECTOR_HTTP_PORT,
+) -> str:
+    """Build the per-host local-collector OTLP endpoint.
+
+    Mirrors the role's ``otel_local_collector_endpoint`` default:
+    ``http://<address>:<port>`` where ``address`` is this host's api_interface
+    address (loopback when it cannot be resolved) and the port is chosen from
+    ``protocol`` via :func:`collector_endpoint_port`.
+    """
+    host = address_in_url_context(address or "127.0.0.1")
+    port = collector_endpoint_port(protocol, grpc_port, http_port)
+    return f"http://{host}:{port}"
