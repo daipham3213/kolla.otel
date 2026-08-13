@@ -34,6 +34,22 @@ def _load_plugin_module():
 _PLUGIN_MOD = _load_plugin_module()
 ActionModule = _PLUGIN_MOD.ActionModule
 
+_SHIM_PATH = _PLUGIN_PATH.parent / "kolla_docker.py"
+
+
+def _load_shim_module():
+    """Load the ``kolla_docker`` backward-compat shim (2023.1 and earlier).
+
+    Each load re-executes the sibling plugin, so its per-run caches start
+    empty — no fixture reset needed.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "otel_kolla_docker_action", _SHIM_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 class _Templar:
     """Identity templar (test values contain no Jinja)."""
@@ -58,16 +74,24 @@ def _staging_result(module_name, module_args, stage_ok):
     return {"changed": True}  # file / copy
 
 
-def _plugin(task_args, executed_sink, stage_ok=True):
-    """Build an ActionModule instance wired with test doubles."""
-    plugin = ActionModule.__new__(ActionModule)
+def _plugin(
+    task_args, executed_sink, stage_ok=True, action="kolla_container", cls=None
+):
+    """Build an ActionModule instance wired with test doubles.
+
+    ``action`` is the module name Ansible invoked the plugin under
+    (``kolla_container`` on modern kolla-ansible, ``kolla_docker`` on 2023.1),
+    exposed as ``self._task.action``; the plugin delegates to it. ``cls`` lets
+    a test drive a different ActionModule (e.g. the ``kolla_docker`` shim's).
+    """
+    plugin = (cls or ActionModule).__new__(cls or ActionModule)
     plugin._task = types.SimpleNamespace(
-        args=dict(task_args), check_mode=False
+        args=dict(task_args), check_mode=False, action=action
     )
     plugin._templar = _Templar()
 
     def _execute_module(module_name, module_args, task_vars):
-        if module_name == "kolla_container":  # the delegated (final) call
+        if module_name == action:  # the delegated (final) call
             executed_sink["module_name"] = module_name
             executed_sink["args"] = module_args
             return {"changed": False}
@@ -79,8 +103,9 @@ def _plugin(task_args, executed_sink, stage_ok=True):
 
 @pytest.fixture(autouse=True)
 def _reset_stage_cache():
-    """The per-run staging cache is module-global; clear it between tests."""
+    """The per-run caches are module-global; clear them between tests."""
     _PLUGIN_MOD._STAGED.clear()
+    _PLUGIN_MOD._ENDPOINTS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -110,9 +135,65 @@ class KollaContainerActionTestCase:
     def test_disabled_by_default_is_passthrough(self):
         sink = {}
         _plugin(_TARGET_ARGS, sink).run(task_vars={})
-        # No opt-in -> args delegated unchanged.
+        # No opt-in and nothing OTEL in the spec -> delegated byte-for-byte.
         assert sink["args"] == _TARGET_ARGS
         assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+
+    def test_disabled_strips_instrumentation_from_target(self):
+        """With auto_instrument off, a target container's desired spec is
+        stripped of any OTEL env/mount/label (by name, like rollback), so a
+        deploy/reconfigure recreates it without instrumentation."""
+        sink = {}
+        args = {
+            "action": "recreate_or_restart_container",
+            "name": "nova_api",
+            "environment": {
+                "KOLLA_X": "1",
+                "OTEL_SERVICE_NAME": "nova-api",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317",
+                "OTEL_RESOURCE_ATTRIBUTES": "service.namespace=openstack",
+                "PYTHONPATH": "/otel-auto-instrumentation-python/x",
+            },
+            "volumes": [
+                "/etc/kolla/nova:/var/lib/kolla/config_files:ro",
+                "/etc/kolla/opentelemetry/python:"
+                "/otel-auto-instrumentation-python:ro",
+            ],
+            "labels": {
+                "kolla_version": "22",
+                "kolla_otel.managed_env": (
+                    "OTEL_SERVICE_NAME,OTEL_EXPORTER_OTLP_ENDPOINT,"
+                    "OTEL_RESOURCE_ATTRIBUTES,PYTHONPATH"
+                ),
+            },
+        }
+        _plugin(args, sink).run(task_vars={"otel_auto_instrument": False})
+        out = sink["args"]
+        # Every managed key gone; kolla's own env preserved.
+        assert out["environment"] == {"KOLLA_X": "1"}
+        # Agent mount dropped; the config mount stays.
+        assert out["volumes"] == [
+            "/etc/kolla/nova:/var/lib/kolla/config_files:ro"
+        ]
+        # Managed label removed; kolla's own labels stay.
+        assert "kolla_otel.managed_env" not in out["labels"]
+        assert out["labels"]["kolla_version"] == "22"
+
+    def test_disabled_does_not_stage_agent(self):
+        """De-instrumentation needs no agent, so the off path makes no host
+        module calls (no pull/copy) — only the kolla_container delegate."""
+        calls = []
+        sink = {}
+        plugin = _plugin(_TARGET_ARGS, sink)
+        inner = plugin._execute_module
+
+        def _record(module_name, module_args, task_vars):
+            calls.append(module_name)
+            return inner(module_name, module_args, task_vars)
+
+        plugin._execute_module = _record
+        plugin.run(task_vars={"otel_auto_instrument": False})
+        assert calls == ["kolla_container"]
 
     def test_enabled_target_container_is_instrumented(self):
         sink = {}
@@ -152,6 +233,74 @@ class KollaContainerActionTestCase:
         env = sink["args"]["environment"]
         assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4317"
 
+    def test_local_collector_uses_http_port_for_http_protocol(self):
+        """Like the role, the local-collector port follows the protocol: the
+        collector's HTTP receiver (4318) for http/protobuf, not gRPC (4317)."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(
+            task_vars={
+                "otel_auto_instrument": True,
+                "otel_exporter_protocol": "http/protobuf",
+            }
+        )
+        env = sink["args"]["environment"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:4318"
+
+    def test_local_collector_uses_api_interface_address(self):
+        """With network facts present, the endpoint targets the routable
+        api_interface address (not loopback), mirroring the role default."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(
+            task_vars={
+                "otel_auto_instrument": True,
+                "api_interface": "eth0",
+                "ansible_facts": {"eth0": {"ipv4": {"address": "10.0.0.5"}}},
+            }
+        )
+        env = sink["args"]["environment"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://10.0.0.5:4317"
+
+    def test_local_collector_gathers_network_facts_on_demand(self):
+        """When facts are absent (gather_facts:false), the plugin gathers the
+        network subset on demand to resolve the api_interface address."""
+        sink = {}
+        plugin = _plugin(_TARGET_ARGS, sink)
+        inner = plugin._execute_module
+        gathered = []
+
+        def _with_setup(module_name, module_args, task_vars):
+            if module_name == "setup":
+                gathered.append(module_args.get("gather_subset"))
+                return {
+                    "ansible_facts": {
+                        "eth0": {"ipv4": {"address": "10.9.9.9"}}
+                    }
+                }
+            return inner(module_name, module_args, task_vars)
+
+        plugin._execute_module = _with_setup
+        plugin.run(
+            task_vars={"otel_auto_instrument": True, "api_interface": "eth0"}
+        )
+        assert gathered == [["!all", "!min", "network"]]
+        env = sink["args"]["environment"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://10.9.9.9:4317"
+
+    def test_local_collector_endpoint_override_is_honored(self):
+        """An explicit otel_local_collector_endpoint (globals.yml) wins
+        verbatim, exactly as the role's set_fact does."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(
+            task_vars={
+                "otel_auto_instrument": True,
+                "otel_local_collector_endpoint": "http://collector.local:4317",
+            }
+        )
+        env = sink["args"]["environment"]
+        assert (
+            env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector.local:4317"
+        )
+
     def test_enabled_non_target_container_is_passthrough(self):
         sink = {}
         args = dict(_TARGET_ARGS, name="rabbitmq")
@@ -163,6 +312,25 @@ class KollaContainerActionTestCase:
         args = dict(_TARGET_ARGS, action="remove_container")
         _plugin(args, sink).run(task_vars=dict(_ENABLED))
         assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+
+    def test_rollback_action_is_passthrough(self):
+        """During otel-rollback the role recreates each container WITHOUT the
+        instrumentation; the plugin must step aside (not re-add it) so the
+        rollback actually removes the OTEL env/mount/label. Otherwise, with
+        otel_auto_instrument enabled, rollback would be silently defeated."""
+        sink = {}
+        task_vars = dict(_ENABLED, otel_action="rollback")
+        # The role's de-instrumented spec: OTEL env already stripped.
+        args = dict(_TARGET_ARGS, environment={"KOLLA_X": "1"})
+        _plugin(args, sink).run(task_vars=task_vars)
+        # Delegated unchanged: no OTEL env re-added, no mount, no label.
+        assert sink["args"]["environment"] == {"KOLLA_X": "1"}
+        assert "OTEL_SERVICE_NAME" not in sink["args"]["environment"]
+        assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+        assert not any(
+            "otel-auto-instrumentation" in v
+            for v in sink["args"].get("volumes", [])
+        )
 
     def test_compare_container_is_made_otel_aware(self):
         """compare_container gets the same overlay so kolla detects the diff
@@ -198,6 +366,86 @@ class KollaContainerActionTestCase:
         env = sink["args"]["environment"]
         assert "JAVA_TOOL_OPTIONS" in env  # java activation
         assert env["OTEL_SERVICE_NAME"] == "svc"
+
+    def test_python_activation_sets_oslo_service_distro(self):
+        """Every Python target gets the oslo.service OTEL distro/configurator
+        by default (language activation)."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(task_vars=dict(_ENABLED))
+        env = sink["args"]["environment"]
+        assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
+        assert env["OTEL_PYTHON_CONFIGURATOR"] == "oslo_service"
+
+    def test_eventlet_service_gets_monkey_patch(self):
+        """An eventlet-based service (nova_conductor) is told to monkey-patch
+        the runtime before instrumenting."""
+        sink = {}
+        args = dict(_TARGET_ARGS, name="nova_conductor")
+        _plugin(args, sink).run(task_vars=dict(_ENABLED))
+        env = sink["args"]["environment"]
+        assert env["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"] == "true"
+
+    def test_wsgi_service_has_no_monkey_patch(self):
+        """A uWSGI/mod_wsgi service (keystone) must NOT be monkey-patched."""
+        sink = {}
+        args = dict(_TARGET_ARGS, name="keystone")
+        _plugin(args, sink).run(task_vars=dict(_ENABLED))
+        env = sink["args"]["environment"]
+        assert "OTEL_PYTHON_EVENTLET_MONKEY_PATCH" not in env
+        # ...but it is still instrumented (distro + activation applied).
+        assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+    def test_eventlet_extra_services_extend_the_list(self):
+        """otel_eventlet_extra_services adds to (not replaces) the eventlet
+        list, so a non-core target can be marked eventlet without restating
+        the built-in list."""
+        task_vars = dict(_ENABLED, otel_eventlet_extra_services=["nova-api"])
+        # nova-api is WSGI by default (not in otel_eventlet_services), but the
+        # extra list opts it in.
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(task_vars=task_vars)
+        assert (
+            sink["args"]["environment"]["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"]
+            == "true"
+        )
+        # ...and the built-in eventlet defaults still apply alongside it.
+        sink2 = {}
+        _plugin(dict(_TARGET_ARGS, name="nova_conductor"), sink2).run(
+            task_vars=task_vars
+        )
+        assert (
+            sink2["args"]["environment"]["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"]
+            == "true"
+        )
+
+    def test_extra_services_extend_the_target_list(self):
+        """otel_instrument_extra_services adds targets on top of the built-in
+        list rather than replacing it."""
+        sink = {}
+        task_vars = dict(
+            _ENABLED,
+            otel_instrument_extra_services=[
+                {
+                    "name": "mysvc",
+                    "container_name": "my_svc",
+                    "language": "python",
+                }
+            ],
+        )
+        # A container only present in the extra list is instrumented.
+        _plugin(dict(_TARGET_ARGS, name="my_svc"), sink).run(
+            task_vars=task_vars
+        )
+        assert sink["args"]["environment"]["OTEL_SERVICE_NAME"] == "mysvc"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+        # ...and the built-in defaults still apply alongside it.
+        sink2 = {}
+        _plugin(dict(_TARGET_ARGS, name="nova_api"), sink2).run(
+            task_vars=task_vars
+        )
+        assert sink2["args"]["environment"]["OTEL_SERVICE_NAME"] == "nova-api"
 
     def test_staging_stages_agent_then_instruments(self):
         """A target is staged (pull + copy) before the overlay is applied."""
@@ -253,3 +501,47 @@ class KollaContainerActionTestCase:
         result = plugin.run(task_vars=dict(_ENABLED))
         assert result == {"changed": False}
         assert sink["args"] == _TARGET_ARGS
+
+    def test_delegates_to_invoked_module_name(self):
+        """On kolla-ansible 2023.1 the plugin is invoked as ``kolla_docker``;
+        it must delegate to that module (not the modern ``kolla_container``),
+        while still applying the overlay."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink, action="kolla_docker").run(
+            task_vars=dict(_ENABLED)
+        )
+        # Delegated to the module Ansible invoked us as.
+        assert sink["module_name"] == "kolla_docker"
+        # ...and instrumentation was still applied on the 2023.1 path.
+        assert sink["args"]["environment"]["OTEL_SERVICE_NAME"] == "nova-api"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+    def test_delegates_to_kolla_container_by_default(self):
+        """Modern kolla-ansible invokes ``kolla_container``; delegate there."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(task_vars=dict(_ENABLED))
+        assert sink["module_name"] == "kolla_container"
+
+
+class KollaDockerShimTestCase:
+    """The ``kolla_docker`` backward-compat shim (kolla-ansible <= 2023.1)."""
+
+    def test_shim_reexports_the_same_action_module(self):
+        """The shim exposes an ActionModule that is the sibling's class."""
+        shim = _load_shim_module()
+        assert shim.ActionModule.__name__ == "ActionModule"
+        from ansible.plugins.action import ActionBase
+
+        assert issubclass(shim.ActionModule, ActionBase)
+
+    def test_shim_instruments_and_delegates_to_kolla_docker(self):
+        """Driven through the shim's class, a target is instrumented and the
+        delegate goes to ``kolla_docker`` — proving 2023.1 end to end."""
+        shim = _load_shim_module()
+        sink = {}
+        _plugin(
+            _TARGET_ARGS, sink, action="kolla_docker", cls=shim.ActionModule
+        ).run(task_vars=dict(_ENABLED))
+        assert sink["module_name"] == "kolla_docker"
+        assert sink["args"]["environment"]["OTEL_SERVICE_NAME"] == "nova-api"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]

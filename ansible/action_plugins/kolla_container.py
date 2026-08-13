@@ -16,31 +16,45 @@
 Installed adjacent to kolla-ansible's ``site.yml`` (via this package's
 shared-data), Ansible auto-loads it as *the* action for every
 ``kolla_container`` task — exactly like kolla's own ``merge_configs`` action
-plugin. It lets us re-apply OpenTelemetry instrumentation whenever kolla
-(re)creates a container during ``deploy`` / ``reconfigure``, so instrumentation
-persists across operations that rebuild services from kolla's own definitions
-— the Ansible analogue of the opentelemetry-operator's mutating webhook.
+plugin. It makes kolla's desired container spec track the
+``otel_auto_instrument`` switch whenever kolla (re)creates a container during
+``deploy`` / ``reconfigure``, so the instrumentation state persists across
+operations that rebuild services from kolla's own definitions — the Ansible
+analogue of the opentelemetry-operator's mutating webhook.
+
+* ``otel_auto_instrument: true`` — **re-apply** OpenTelemetry (env / agent
+  bind-mount / managed label) so a targeted container stays instrumented.
+* ``otel_auto_instrument: false`` (default) — **strip** any OpenTelemetry from
+  the desired spec so a targeted container is recreated without it (a no-op
+  when the spec is already clean, which it normally is).
+
+The same :class:`ActionModule` backs both container module names kolla-ansible
+has used: modern releases drive containers through ``kolla_container``, while
+2023.1 and earlier use ``kolla_docker``. ``run`` delegates to whichever name
+Ansible invoked it as, and the plugin ships under both (the sibling
+``kolla_docker.py`` re-exports this class), so instrumentation works across
+releases. Neither name has a stock kolla action plugin, so this is purely
+additive.
 
 Safety is the overriding concern, because this plugin is in the call path of
-*every* ``kolla_container`` task:
+*every* ``kolla_container`` / ``kolla_docker`` task:
 
-* It is **off by default.** Unless ``otel_auto_instrument`` is truthy *and*
-  ``otel_exporter_endpoint`` is set, ``run`` does nothing but delegate to the
-  real module — a one-lookup passthrough.
-* It only ever augments the create/compare actions (``start_container``,
+* It only ever shapes the create/compare actions (``start_container``,
   ``recreate_or_restart_container`` and ``compare_container``) and only for
-  containers in the configured target list. Everything else is passed through
-  byte-for-byte. Augmenting ``compare_container`` is what makes kolla notice
-  missing instrumentation on ``deploy``/``reconfigure`` and fire its own
-  recreate handler (which we then augment); once instrumented the comparison
-  matches, so no needless recreate happens.
+  containers in the configured target list. Everything else — a non-target
+  container, a non-augmentable action, or an explicit ``otel-rollback`` (which
+  the ``otel_instrument`` role de-instruments more precisely) — is passed
+  through byte-for-byte. Shaping ``compare_container`` is what makes kolla
+  notice a mismatch with the desired state on ``deploy``/``reconfigure`` and
+  fire its own recreate handler (which we then shape too); once the running
+  container matches, no needless recreate happens.
 * It **fails open**: any error while computing the overlay is logged as a
-  warning and the original task is run unmodified. Instrumentation is best
-  effort; it must never break a deploy.
+  warning and the original task is run unmodified. It is best effort; it must
+  never break a deploy.
 
-The overlay itself (env / bind-mount / label) is computed by the
-dependency-free :mod:`kolla_otel.instrumentation`, the shared source of truth
-with the ``otel_instrument`` role.
+The env / bind-mount / label logic is computed by the dependency-free
+:mod:`kolla_otel.instrumentation`, the shared source of truth with the
+``otel_instrument`` role.
 """
 
 import base64
@@ -56,6 +70,11 @@ display = Display()
 # instead of on every kolla_container task that touches it.
 _STAGED: set = set()
 
+# Per-process cache of the resolved local-collector endpoint per host, so the
+# network facts are gathered at most once per host per run rather than on every
+# instrumented kolla_container task. Keyed by ``inventory_hostname``.
+_ENDPOINTS: dict = {}
+
 # Emitted once, when Ansible loads this plugin (i.e. it is on the
 # action-plugin search path — normally because it was installed adjacent to
 # kolla's site.yml). Run any kolla-ansible command with -vvv and grep for this
@@ -67,7 +86,7 @@ display.vvv("otel: kolla_container action plugin loaded")
 
 
 class ActionModule(ActionBase):
-    """Augment container-creating ``kolla_container`` tasks with OTEL."""
+    """Shape container-creating ``kolla_container`` tasks to the OTEL state."""
 
     def run(self, tmp=None, task_vars=None):
         result = super().run(tmp, task_vars)
@@ -84,9 +103,15 @@ class ActionModule(ActionBase):
                 f"(passing through unmodified): {exc}"
             )
 
+        # Delegate to whichever container module Ansible invoked us as, so a
+        # single implementation works across kolla-ansible releases: modern
+        # ones drive containers through ``kolla_container``, while 2023.1 and
+        # earlier use ``kolla_docker`` (the plugin ships under both names).
+        # Fall back to ``kolla_container`` if the action name is unavailable.
+        module_name = getattr(self._task, "action", None) or "kolla_container"
         result.update(
             self._execute_module(
-                module_name="kolla_container",
+                module_name=module_name,
                 module_args=module_args,
                 task_vars=task_vars,
             )
@@ -107,13 +132,112 @@ class ActionModule(ActionBase):
             return default
         return self._resolve(task_vars.get(name))
 
-    def _maybe_instrument(self, module_args, task_vars):
-        """Return ``module_args`` augmented with OTEL iff every gate passes.
+    def _local_collector_endpoint(self, task_vars):
+        """Resolve this host's local-collector endpoint like the role.
 
-        Every gate that declines logs the reason at -vvv, prefixed ``otel:``
-        and tagged with the container name, so a passthrough is diagnosable:
-        run any kolla-ansible command with -vvv and grep for ``otel:`` to see
-        exactly which gate stopped a given container from being instrumented.
+        Mirrors the ``otel_local_collector_endpoint`` role default: an operator
+        override (e.g. in globals.yml) wins verbatim; otherwise the endpoint is
+        ``http://<api_interface address>:<port>`` with the port chosen by
+        ``otel_exporter_protocol`` (``http/protobuf`` -> the collector's HTTP
+        port, else its gRPC port), gathering network facts on demand when they
+        are absent and falling back to loopback when the address cannot be
+        resolved. Cached per host for the run.
+        """
+        from kolla_otel import instrumentation as instr
+
+        # An operator-set endpoint (globals.yml / group_vars) wins verbatim,
+        # exactly as the role's set_fact does when the var is overridden.
+        override = self._var(task_vars, "otel_local_collector_endpoint", None)
+        if override:
+            return str(override)
+
+        host = task_vars.get("inventory_hostname", "")
+        if host in _ENDPOINTS:
+            return _ENDPOINTS[host]
+
+        protocol = str(
+            self._var(
+                task_vars,
+                "otel_exporter_protocol",
+                instr.SCALAR_DEFAULTS["otel_exporter_protocol"],
+            )
+            or instr.SCALAR_DEFAULTS["otel_exporter_protocol"]
+        )
+        grpc_port = self._var(
+            task_vars,
+            "otel_collector_grpc_port",
+            instr.DEFAULT_COLLECTOR_GRPC_PORT,
+        )
+        http_port = self._var(
+            task_vars,
+            "otel_collector_http_port",
+            instr.DEFAULT_COLLECTOR_HTTP_PORT,
+        )
+        endpoint = instr.local_collector_endpoint(
+            self._api_interface_address(task_vars),
+            protocol,
+            grpc_port,
+            http_port,
+        )
+        _ENDPOINTS[host] = endpoint
+        return endpoint
+
+    def _api_interface_address(self, task_vars):
+        """Return this host's api_interface address, or ``None``.
+
+        Mirrors the role's endpoint fact lookup (and its on-demand
+        ``Gather network facts`` step): read the address of ``api_interface``
+        (falling back to ``network_interface``) from network facts, gathering
+        them when the play ran with ``gather_facts: false`` and they are
+        absent. Returns ``None`` when no interface is configured or the address
+        cannot be resolved, so the caller falls back to loopback.
+        """
+        from kolla_otel import instrumentation as instr
+
+        interface = str(
+            self._var(task_vars, "api_interface", None)
+            or self._var(task_vars, "network_interface", None)
+            or ""
+        )
+        if not interface:
+            return None
+        family = str(
+            self._var(task_vars, "api_address_family", None)
+            or self._var(task_vars, "network_address_family", None)
+            or "ipv4"
+        )
+
+        facts = task_vars.get("ansible_facts") or {}
+        address = instr.interface_address(facts, interface, family)
+        if address:
+            return address
+
+        # Facts absent (e.g. a play with gather_facts:false, as the role's own
+        # play runs): gather the network subset on demand, like the role. Never
+        # fatal — on failure or in check mode we return None -> loopback.
+        if self._task.check_mode:
+            return None
+        setup = self._module(
+            "setup",
+            {"gather_subset": ["!all", "!min", "network"]},
+            task_vars,
+        )
+        facts = setup.get("ansible_facts") or {}
+        return instr.interface_address(facts, interface, family)
+
+    def _maybe_instrument(self, module_args, task_vars):
+        """Return ``module_args`` shaped for the desired instrumentation state.
+
+        For a targeted container on an augmentable action, the plugin makes
+        kolla's desired spec match ``otel_auto_instrument``: when truthy it
+        overlays the OTEL env / agent mount / managed label (so a
+        deploy/reconfigure keeps the container instrumented); when falsy it
+        strips any of those from the spec (so a deploy/reconfigure recreates
+        the container without instrumentation). Every other task — non-target
+        container, non-augmentable action, or an explicit rollback — is passed
+        through untouched. Each declining gate logs its reason at -vvv,
+        prefixed ``otel:`` and tagged with the container name, so run any
+        kolla-ansible command with -vvv and grep for ``otel:`` to see why.
         """
         from ansible.module_utils.parsing.convert_bool import boolean
 
@@ -121,22 +245,26 @@ class ActionModule(ActionBase):
         name = self._resolve(module_args.get("name"))
         label = name or "<unnamed>"
 
-        # Gate 1: explicit opt-in. Off by default so the plugin is a trivial
-        # passthrough for everyone who has not enabled auto-instrumentation.
-        if not boolean(
-            self._var(task_vars, "otel_auto_instrument", False),
-            strict=False,
-        ):
+        # Gate 1: never touch the spec during an explicit rollback. The
+        # otel-rollback playbook runs the otel_instrument role with
+        # otel_action=rollback, whose recreate deliberately strips the OTEL
+        # env, drops the agent bind-mount and removes the managed label. If we
+        # shaped that recreate we would fight the role's own, more precise
+        # (label-based) de-instrumentation. Step aside so the role's spec is
+        # what kolla applies. (otel_action is absent during a normal
+        # deploy/reconfigure, so this only fires under otel-rollback.)
+        otel_action = self._var(task_vars, "otel_action", "instrument")
+        if str(otel_action) == "rollback":
             display.vvv(
-                f"otel: '{label}': otel_auto_instrument not enabled "
-                "-> passthrough"
+                f"otel: '{label}': otel_action=rollback -> passthrough "
+                "(deferring to the role's de-instrumentation)"
             )
             return module_args
 
         from kolla_otel import instrumentation as instr
 
-        # Gate 2: only container-create/compare actions carry a spec to
-        # augment (compare so kolla notices missing instrumentation and fires
+        # Gate 2: only container-create/compare actions carry a spec to shape
+        # (compare so kolla notices a mismatch with the desired state and fires
         # its recreate handler; see instrumentation.AUGMENT_ACTIONS).
         if action not in instr.AUGMENT_ACTIONS:
             display.vvv(
@@ -150,25 +278,24 @@ class ActionModule(ActionBase):
             display.vvv("otel: task has no container name -> passthrough")
             return module_args
 
-        # Resolve the exporter endpoint: an external one if configured,
-        # otherwise the per-host local collector (deployed by the
-        # otel_collector role). It is therefore always well-defined.
-        endpoint = str(
-            self._var(task_vars, "otel_exporter_endpoint", "") or ""
-        ) or str(
-            self._var(
-                task_vars,
-                "otel_local_collector_endpoint",
-                instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT,
-            )
-            or instr.DEFAULT_LOCAL_COLLECTOR_ENDPOINT
-        )
+        # Gate 4: this container must be a configured target. The effective
+        # list is the base services plus any the operator added via
+        # otel_instrument_extra_services (extend, not override). The base is
+        # either an explicit otel_instrument_services from globals.yml, or the
+        # built-in defaults gated by kolla's enable_<project> flags, so a plain
+        # deploy only instruments projects kolla actually deployed, mirroring
+        # the role.
+        def _is_enabled(flag, fallback):
+            value = self._var(task_vars, flag, None)
+            if value is None:
+                return fallback
+            return boolean(value, strict=False)
 
-        # Gate 5: this container must be a configured target.
         services = self._var(task_vars, "otel_instrument_services", None)
         if services is None:
-            services = instr.DEFAULT_SERVICES
-        service = instr.find_service(services, name)
+            services = instr.default_services(_is_enabled)
+        extra = self._var(task_vars, "otel_instrument_extra_services", None)
+        service = instr.find_service(list(services) + list(extra or []), name)
         if service is None:
             display.vvv(
                 f"otel: '{label}': not in otel_instrument_services "
@@ -176,7 +303,7 @@ class ActionModule(ActionBase):
             )
             return module_args
 
-        # Gate 6: the target's language must be known.
+        # Gate 5: the target's language must be known.
         language = service.get("language")
         if language not in instr.LANGUAGE_DEFAULTS:
             display.vvv(
@@ -194,6 +321,21 @@ class ActionModule(ActionBase):
             )
         )
 
+        # Gate 6: the desired state switch. When auto-instrument is OFF, make
+        # the spec OTEL-free (strip any managed env / agent mount / label) so a
+        # deploy/reconfigure recreates the target WITHOUT instrumentation,
+        # rather than leaving whatever is running in place. kolla's own desired
+        # spec is normally already clean, so this is usually a no-op; it
+        # guarantees the emitted spec carries no OTEL and makes the
+        # compare_container check removal-aware.
+        if not boolean(
+            self._var(task_vars, "otel_auto_instrument", False),
+            strict=False,
+        ):
+            return self._deinstrument(
+                module_args, instr, lang, service, task_vars, name, language
+            )
+
         # Gate 7: the agent must be on the host before we mount it. Stage it
         # (pull + copy-out) now, so a plain deploy/reconfigure produces a
         # working instrumentation without a prior `otel-instrument` run. If
@@ -206,6 +348,15 @@ class ActionModule(ActionBase):
                 f"otel: '{name}': agent not staged on host -> passthrough"
             )
             return module_args
+
+        # Resolve the exporter endpoint: an external one if configured,
+        # otherwise the per-host local collector (deployed by the
+        # otel_collector role). It is therefore always well-defined. Resolved
+        # only now — after the target/language/staging gates — so we never
+        # gather network facts for a container we are not going to instrument.
+        endpoint = str(
+            self._var(task_vars, "otel_exporter_endpoint", "") or ""
+        ) or self._local_collector_endpoint(task_vars)
 
         # Build the managed OTEL_* environment for this service. The endpoint
         # is the resolved one (external or local collector), not the raw
@@ -221,12 +372,32 @@ class ActionModule(ActionBase):
             self._var(task_vars, "otel_resource_attributes_extra", {}) or {},
             service.get("resource_attributes") or {},
         )
+        # Eventlet-based OpenStack services need the agent to monkey-patch
+        # first. The list is otel_eventlet_services (default: all eventlet
+        # services) plus anything the operator added via
+        # otel_eventlet_extra_services (extend, not override). Layer it as a
+        # managed default below the service's own environment, so an explicit
+        # per-service value still wins.
+        eventlet_services = self._var(
+            task_vars, "otel_eventlet_services", None
+        )
+        if eventlet_services is None:
+            eventlet_services = instr.DEFAULT_EVENTLET_SERVICES
+        eventlet_extra = self._var(
+            task_vars, "otel_eventlet_extra_services", None
+        )
+        service_env = instr.eventlet_environment(
+            service.get("name", ""),
+            list(eventlet_services) + list(eventlet_extra or []),
+        )
+        service_env.update(service.get("environment") or {})
+
         managed = instr.managed_environment(
             common_env,
             self._var(task_vars, "otel_extra_environment", {}) or {},
             service.get("otel_service_name") or service.get("name", ""),
             instr.resource_attributes_string(attrs),
-            service.get("environment") or {},
+            service_env,
             lang["activation"],
         )
         env_label = str(
@@ -265,6 +436,61 @@ class ActionModule(ActionBase):
             display.vvv(
                 f"otel: instrumented kolla_container '{name}' ({language})"
             )
+        return module_args
+
+    def _deinstrument(
+        self, module_args, instr, lang, service, task_vars, name, language
+    ):
+        """Strip any OTEL overlay from the desired spec (auto-instrument off).
+
+        Mirrors the rollback role's name-based removal: drop every env key this
+        project could manage (computed from names, no endpoint needed), the
+        agent bind at the language ``mount_path`` and the managed-env label. So
+        a deploy/reconfigure recreates the target WITHOUT instrumentation.
+        kolla's desired spec is normally already OTEL-free, so each strip only
+        rewrites the key when it actually changes something — leaving a clean
+        spec byte-for-byte untouched (a true passthrough), yet removing OTEL if
+        anything upstream put it there and making compare_container detect an
+        instrumented running container as needing recreation.
+        """
+        removable = instr.managed_env_keys(
+            instr.COMMON_ENV_MAP.keys(),
+            (self._var(task_vars, "otel_extra_environment", {}) or {}).keys(),
+            # include the eventlet key (managed separately from service env)
+            [*(service.get("environment") or {}), instr.EVENTLET_ENV_KEY],
+            lang["activation"].keys(),
+        )
+
+        environment = module_args.get("environment") or {}
+        stripped_env = instr.strip_managed_environment(environment, removable)
+        if stripped_env != environment:
+            module_args["environment"] = stripped_env
+
+        volumes = module_args.get("volumes")
+        if volumes:
+            stripped_vols = instr.remove_agent_mount(
+                volumes, lang["mount_path"]
+            )
+            if stripped_vols != list(volumes):
+                module_args["volumes"] = stripped_vols
+
+        env_label = str(
+            self._var(
+                task_vars,
+                "otel_managed_env_label",
+                instr.DEFAULT_MANAGED_ENV_LABEL,
+            )
+        )
+        labels = module_args.get("labels") or {}
+        if env_label in labels:
+            module_args["labels"] = {
+                k: v for k, v in labels.items() if k != env_label
+            }
+
+        display.vvv(
+            f"otel: '{name}' ({language}): auto_instrument off -> OTEL kept "
+            "out of the desired spec (kolla will recreate without it)"
+        )
         return module_args
 
     # -- staging ---------------------------------------------------------

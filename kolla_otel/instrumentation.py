@@ -21,7 +21,7 @@ domain logic can be unit-tested without Ansible.
 """
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
@@ -29,11 +29,18 @@ __all__ = [
     "LANGUAGE_DEFAULTS",
     "COMMON_ENV_MAP",
     "SCALAR_DEFAULTS",
+    "DEFAULT_SERVICE_GROUPS",
     "DEFAULT_SERVICES",
+    "DEFAULT_EVENTLET_SERVICES",
+    "EVENTLET_ENV_KEY",
+    "default_services",
+    "eventlet_environment",
     "DEFAULT_HOST_LIB_PATH",
     "DEFAULT_MANAGED_ENV_LABEL",
     "DEFAULT_IMAGE_REGISTRY",
     "DEFAULT_IMAGE_VERSION",
+    "DEFAULT_COLLECTOR_GRPC_PORT",
+    "DEFAULT_COLLECTOR_HTTP_PORT",
     "DEFAULT_LOCAL_COLLECTOR_ENDPOINT",
     "deep_merge",
     "resolve_language",
@@ -44,8 +51,15 @@ __all__ = [
     "stage_paths",
     "agent_bind",
     "apply_agent_mount",
+    "remove_agent_mount",
+    "managed_env_keys",
+    "strip_managed_environment",
     "managed_label_value",
     "find_service",
+    "collector_endpoint_port",
+    "address_in_url_context",
+    "interface_address",
+    "local_collector_endpoint",
 ]
 
 #: ``kolla_container`` actions whose desired spec we augment. Every other
@@ -74,16 +88,26 @@ DEFAULT_MANAGED_ENV_LABEL = "kolla_otel.managed_env"
 DEFAULT_IMAGE_REGISTRY = "ghcr.io/open-telemetry/opentelemetry-operator"
 DEFAULT_IMAGE_VERSION = "latest"
 
+#: Local collector listener ports. Mirror otel_collector_grpc_port /
+#: otel_collector_http_port (the otel_collector role defaults, also the
+#: inline fallbacks in otel_local_collector_endpoint). The port the
+#: instrumented services export to is chosen from these by protocol.
+DEFAULT_COLLECTOR_GRPC_PORT = 4317
+DEFAULT_COLLECTOR_HTTP_PORT = 4318
+
 #: Fallback endpoint for the per-host local collector (deployed by the
 #: otel_collector role, reachable because kolla uses host networking) when no
-#: external collector is configured. The role default
-#: (otel_local_collector_endpoint) resolves this host's api_interface address
-#: via Jinja; the action plugin templates that when it is set in globals.yml,
-#: but during a plain deploy where the var is absent it cannot resolve facts in
-#: pure Python, so it falls back to this
-#: loopback literal — which is also what the role default renders to when no
-#: interface address can be resolved (kept in sync by test_instrumentation.py).
-DEFAULT_LOCAL_COLLECTOR_ENDPOINT = "http://127.0.0.1:4317"
+#: external collector is configured and this host's api_interface address
+#: cannot be resolved. Mirrors what the role default
+#: (otel_local_collector_endpoint) renders to under the default gRPC protocol
+#: when no interface address is available (kept in sync by
+#: test_instrumentation.py). The action plugin normally resolves the routable
+#: api_interface address (gathering network facts on demand, like the role) and
+#: the protocol-appropriate port via :func:`local_collector_endpoint`; this
+#: literal is only the last-resort fallback.
+DEFAULT_LOCAL_COLLECTOR_ENDPOINT = (
+    f"http://127.0.0.1:{DEFAULT_COLLECTOR_GRPC_PORT}"
+)
 
 #: Per-language agent definition. Mirrors ``otel_language_defaults`` in the
 #: role's ``defaults/main.yml`` (kept in sync by test_instrumentation.py).
@@ -98,6 +122,12 @@ LANGUAGE_DEFAULTS: dict[str, dict[str, Any]] = {
                 "instrumentation/auto_instrumentation:"
                 "/otel-auto-instrumentation-python"
             ),
+            # OpenStack services build on oslo.service; its OpenTelemetry
+            # distro/configurator wires the SDK up the way OpenStack expects
+            # (config via oslo.config, correct service naming, …). Applied as
+            # activation so it is always set for the Python agent.
+            "OTEL_PYTHON_DISTRO": "oslo_service",
+            "OTEL_PYTHON_CONFIGURATOR": "oslo_service",
         },
     },
     "java": {
@@ -176,69 +206,158 @@ SCALAR_DEFAULTS: dict[str, str] = {
 }
 
 
-#: Default target services. Mirrors ``otel_instrument_services`` in the role
-#: defaults so the plugin instruments the same containers during a plain
-#: ``deploy`` when the operator has not listed them in globals.yml (kept in
-#: sync by test_instrumentation.py).
-DEFAULT_SERVICES: list[dict[str, str]] = [
-    {"name": "nova-api", "container_name": "nova_api", "language": "python"},
-    {
-        "name": "nova-conductor",
-        "container_name": "nova_conductor",
-        "language": "python",
+#: Default target services grouped by the OpenStack project (and the kolla
+#: ``enable_<project>`` flag that gates it), so the effective target list
+#: tracks what kolla actually deployed — enabling a project instruments its
+#: services, disabling it drops them, like ``enable_octavia`` deploys octavia.
+#: ``enable_default`` is the fallback used only when the flag is absent from
+#: the run's variables (in a real kolla run every ``enable_*`` is defined).
+#: Mirrors
+#: the per-project ``otel_services_*`` vars in the role defaults (kept in sync
+#: by test_instrumentation.py).
+DEFAULT_SERVICE_GROUPS: dict[str, dict[str, Any]] = {
+    "keystone": {
+        "enable_flag": "enable_keystone",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "keystone",
+                "container_name": "keystone",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "nova-scheduler",
-        "container_name": "nova_scheduler",
-        "language": "python",
+    "nova": {
+        "enable_flag": "enable_nova",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "nova-api",
+                "container_name": "nova_api",
+                "language": "python",
+            },
+            {
+                "name": "nova-conductor",
+                "container_name": "nova_conductor",
+                "language": "python",
+            },
+            {
+                "name": "nova-scheduler",
+                "container_name": "nova_scheduler",
+                "language": "python",
+            },
+            {
+                "name": "nova-compute",
+                "container_name": "nova_compute",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "nova-compute",
-        "container_name": "nova_compute",
-        "language": "python",
+    "cinder": {
+        "enable_flag": "enable_cinder",
+        "enable_default": False,
+        "services": [
+            {
+                "name": "cinder-api",
+                "container_name": "cinder_api",
+                "language": "python",
+            },
+            {
+                "name": "cinder-scheduler",
+                "container_name": "cinder_scheduler",
+                "language": "python",
+            },
+            {
+                "name": "cinder-volume",
+                "container_name": "cinder_volume",
+                "language": "python",
+            },
+            {
+                "name": "cinder-backup",
+                "container_name": "cinder_backup",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-api",
-        "container_name": "cinder_api",
-        "language": "python",
+    "glance": {
+        "enable_flag": "enable_glance",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "glance-api",
+                "container_name": "glance_api",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-scheduler",
-        "container_name": "cinder_scheduler",
-        "language": "python",
+    "neutron": {
+        "enable_flag": "enable_neutron",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "neutron-server",
+                "container_name": "neutron_server",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-volume",
-        "container_name": "cinder_volume",
-        "language": "python",
+    "placement": {
+        "enable_flag": "enable_placement",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "placement-api",
+                "container_name": "placement_api",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-backup",
-        "container_name": "cinder_backup",
-        "language": "python",
+    "heat": {
+        "enable_flag": "enable_heat",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "heat-api",
+                "container_name": "heat_api",
+                "language": "python",
+            },
+            {
+                "name": "heat-engine",
+                "container_name": "heat_engine",
+                "language": "python",
+            },
+        ],
     },
-    {"name": "keystone", "container_name": "keystone", "language": "python"},
-    {
-        "name": "glance-api",
-        "container_name": "glance_api",
-        "language": "python",
-    },
-    {
-        "name": "neutron-server",
-        "container_name": "neutron_server",
-        "language": "python",
-    },
-    {
-        "name": "placement-api",
-        "container_name": "placement_api",
-        "language": "python",
-    },
-    {"name": "heat-api", "container_name": "heat_api", "language": "python"},
-    {
-        "name": "heat-engine",
-        "container_name": "heat_engine",
-        "language": "python",
-    },
+}
+
+#: The full, ungated catalog (every group flattened), handy for reference and
+#: tests. The plugin uses :func:`default_services` to gate this by the flags.
+DEFAULT_SERVICES: list[dict[str, Any]] = [
+    dict(service)
+    for group in DEFAULT_SERVICE_GROUPS.values()
+    for service in group["services"]
+]
+
+#: Service names (the hyphenated ``name``) whose Python process runs under
+#: eventlet and therefore needs the agent to monkey-patch before instrumenting.
+#: The RPC/worker daemons and the eventlet-based API servers; NOT the
+#: uWSGI/mod_wsgi services (keystone, nova-api, cinder-api, placement-api),
+#: where monkey-patching would be wrong. Mirrors ``otel_eventlet_services`` in
+#: the role defaults (kept in sync by test_instrumentation.py).
+#: The env var that tells the Python agent to eventlet-monkey-patch first.
+EVENTLET_ENV_KEY = "OTEL_PYTHON_EVENTLET_MONKEY_PATCH"
+
+DEFAULT_EVENTLET_SERVICES: list[str] = [
+    "nova-conductor",
+    "nova-scheduler",
+    "nova-compute",
+    "cinder-scheduler",
+    "cinder-volume",
+    "cinder-backup",
+    "neutron-server",
+    "glance-api",
+    "heat-api",
+    "heat-engine",
 ]
 
 
@@ -350,6 +469,20 @@ def agent_bind(host_lib_path: str, language: str, mount_path: str) -> str:
     return f"{host_lib_path}/{language}:{mount_path}:ro"
 
 
+def remove_agent_mount(
+    binds: Sequence[str] | None, mount_path: str
+) -> list[str]:
+    """Return ``binds`` with any bind whose destination is ``mount_path`` gone.
+
+    Drops any existing bind (named volume or host path) targeting
+    ``mount_path`` — the agent mount — mirroring the reject filter in
+    ``inject.yml`` / ``rollback.yml``. Used both to replace a stale mount
+    before adding ours and to strip it entirely on de-instrumentation.
+    """
+    pattern = re.compile(r"^[^:]+:" + re.escape(mount_path) + r"(:.*)?$")
+    return [b for b in (binds or []) if not pattern.match(b)]
+
+
 def apply_agent_mount(
     binds: Sequence[str] | None, mount_path: str, bind: str
 ) -> list[str]:
@@ -359,10 +492,54 @@ def apply_agent_mount(
     by an earlier run, named volume or host path) before appending ``bind``,
     so a recreate never hits "Duplicate mount point" — mirrors ``inject.yml``.
     """
-    pattern = re.compile(r"^[^:]+:" + re.escape(mount_path) + r"(:.*)?$")
-    kept = [b for b in (binds or []) if not pattern.match(b)]
+    kept = remove_agent_mount(binds, mount_path)
     kept.append(bind)
     return kept
+
+
+def managed_env_keys(
+    common_env_keys: Iterable[str],
+    extra_env_keys: Iterable[str],
+    service_env_keys: Iterable[str],
+    activation_keys: Iterable[str],
+) -> list[str]:
+    """Return every env var name this project could manage for a service.
+
+    Computed from names alone (no exporter endpoint needed), mirroring
+    ``rollback.yml``'s ``otel_possible_keys``: the shared ``OTEL_*`` export
+    vars, deployment-wide extra env, the service identity vars
+    (``OTEL_SERVICE_NAME`` / ``OTEL_RESOURCE_ATTRIBUTES``), the service's own
+    extra env and the language activation env. Used to strip instrumentation
+    without consulting the running container's recorded label. Order is
+    preserved and duplicates removed.
+    """
+    ordered = [
+        *common_env_keys,
+        *extra_env_keys,
+        "OTEL_SERVICE_NAME",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        *service_env_keys,
+        *activation_keys,
+    ]
+    seen: set[str] = set()
+    result: list[str] = []
+    for key in ordered:
+        if key not in seen:
+            seen.add(key)
+            result.append(key)
+    return result
+
+
+def strip_managed_environment(
+    environment: Mapping[str, str], keys: Iterable[str]
+) -> dict[str, str]:
+    """Return ``environment`` with every name in ``keys`` removed.
+
+    Leaves the base-image and kolla env untouched — mirrors the
+    ``rejectattr('key', 'in', ...)`` in ``rollback.yml``.
+    """
+    remove = set(keys)
+    return {k: v for k, v in (environment or {}).items() if k not in remove}
 
 
 def managed_label_value(managed_env: Mapping[str, str]) -> str:
@@ -384,3 +561,102 @@ def find_service(
         if candidate == container_name:
             return dict(service)
     return None
+
+
+def default_services(
+    is_enabled: Callable[[str, bool], bool],
+) -> list[dict[str, Any]]:
+    """Return the enable-gated default target list.
+
+    Includes a project group's services only when its ``enable_<project>`` flag
+    is truthy, so the list tracks what kolla deployed. ``is_enabled`` is called
+    as ``is_enabled(flag_name, fallback)`` and should resolve the flag from the
+    run's variables, using ``fallback`` when it is absent. Mirrors the
+    ``otel_instrument_services`` composition in the role defaults.
+    """
+    result: list[dict[str, Any]] = []
+    for group in DEFAULT_SERVICE_GROUPS.values():
+        if is_enabled(group["enable_flag"], group["enable_default"]):
+            result.extend(dict(service) for service in group["services"])
+    return result
+
+
+def eventlet_environment(
+    service_name: str, eventlet_services: Sequence[str] | None
+) -> dict[str, str]:
+    """Return the eventlet monkey-patch env for ``service_name``, or ``{}``.
+
+    ``{"OTEL_PYTHON_EVENTLET_MONKEY_PATCH": "true"}`` when the service is in
+    ``eventlet_services`` (the operator's ``otel_eventlet_services`` list, or
+    :data:`DEFAULT_EVENTLET_SERVICES`), else an empty dict. Layered as a
+    managed default below the service's own ``environment`` (overridable).
+    """
+    if service_name in (eventlet_services or []):
+        return {EVENTLET_ENV_KEY: "true"}
+    return {}
+
+
+def collector_endpoint_port(
+    protocol: str,
+    grpc_port: int = DEFAULT_COLLECTOR_GRPC_PORT,
+    http_port: int = DEFAULT_COLLECTOR_HTTP_PORT,
+) -> int:
+    """Return the local collector port for the given exporter protocol.
+
+    Mirrors the port selection in the role's ``otel_local_collector_endpoint``
+    default: ``http/protobuf`` targets the collector's HTTP receiver, anything
+    else (``grpc``) its gRPC receiver.
+    """
+    if protocol == "http/protobuf":
+        return http_port
+    return grpc_port
+
+
+def address_in_url_context(address: str) -> str:
+    """Wrap an IPv6 literal in brackets for a URL authority; else unchanged.
+
+    Mirrors kolla's ``put_address_in_context(addr, 'url')`` filter, which the
+    role default applies to the resolved interface address so an IPv6 endpoint
+    is well-formed (``http://[fe80::1]:4317``).
+    """
+    if address and ":" in address and not address.startswith("["):
+        return f"[{address}]"
+    return address
+
+
+def interface_address(
+    ansible_facts: Mapping[str, Any],
+    interface: str,
+    address_family: str = "ipv4",
+) -> str | None:
+    """Return an interface's address from Ansible network facts, or ``None``.
+
+    Mirrors the fact lookup in the role's ``otel_local_collector_endpoint``:
+    ``ansible_facts[<interface, '-'->'_'>][<address_family>]['address']``.
+    Returns ``None`` when the interface, family or address is absent, so the
+    caller can fall back to loopback.
+    """
+    if not interface:
+        return None
+    fact = (ansible_facts or {}).get(interface.replace("-", "_")) or {}
+    family = fact.get(address_family) or {}
+    address = family.get("address")
+    return address or None
+
+
+def local_collector_endpoint(
+    address: str | None,
+    protocol: str,
+    grpc_port: int = DEFAULT_COLLECTOR_GRPC_PORT,
+    http_port: int = DEFAULT_COLLECTOR_HTTP_PORT,
+) -> str:
+    """Build the per-host local-collector OTLP endpoint.
+
+    Mirrors the role's ``otel_local_collector_endpoint`` default:
+    ``http://<address>:<port>`` where ``address`` is this host's api_interface
+    address (loopback when it cannot be resolved) and the port is chosen from
+    ``protocol`` via :func:`collector_endpoint_port`.
+    """
+    host = address_in_url_context(address or "127.0.0.1")
+    port = collector_endpoint_port(protocol, grpc_port, http_port)
+    return f"http://{host}:{port}"

@@ -30,10 +30,20 @@
 
 - name: "OTel | Build environment, labels and volumes | {{ otel_service.name }}"
   vars:
+    # Eventlet monkey-patch env for this service (empty unless its name is in
+    # otel_eventlet_services + otel_eventlet_extra_services), layered as a
+    # managed default below the service's own environment so an explicit
+    # per-service value still wins.
+    otel_eventlet_env: >-
+      {{ {'OTEL_PYTHON_EVENTLET_MONKEY_PATCH': 'true'}
+         if otel_service.name in
+            (otel_eventlet_services + otel_eventlet_extra_services)
+         else {} }}
     # The full set of env this role manages for this service this run. Layered
     # lowest -> highest: common OTEL_* export vars, deployment-wide extra env,
-    # this service's identity, its own extra env, and language activation last
-    # (so it can never be clobbered and the agent always loads).
+    # this service's identity, the eventlet default, its own extra env, and
+    # language activation last (so it can never be clobbered and the agent
+    # always loads).
     otel_managed_env: >-
       {{ otel_common_environment
          | combine(otel_extra_environment)
@@ -42,6 +52,7 @@
                otel_service.otel_service_name | default(otel_service.name),
              'OTEL_RESOURCE_ATTRIBUTES': otel_ra_string,
            })
+         | combine(otel_eventlet_env)
          | combine(otel_service.environment | default({}))
          | combine(otel_lang.activation) }}
     # Keys we injected on a previous run, recorded in a container label. Any of

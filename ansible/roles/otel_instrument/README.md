@@ -23,6 +23,38 @@ of the operator's Kubernetes init-container pattern.
      variables (`PYTHONPATH`, `JAVA_TOOL_OPTIONS`, `NODE_OPTIONS`, CoreCLR
      hooks).
 
+### Default targets follow kolla's `enable_*` flags
+
+You don't hand-maintain the container list. The default `otel_instrument_services`
+is assembled from per-project lists (`otel_services_nova`, `otel_services_cinder`,
+…) and gated by kolla's own `enable_<project>` flags — so it tracks what kolla
+actually deployed: `enable_cinder: true` instruments the cinder containers,
+leaving it off drops them, exactly like `enable_octavia` deploys octavia. Core
+projects (keystone, nova, glance, neutron, placement, heat) are on by default
+(via their kolla flags); cinder follows `enable_cinder` (off in kolla by
+default). To take full control, set `otel_instrument_services` yourself, or add
+targets with `otel_instrument_extra_services` (which *extends* the gated list).
+
+### OpenStack Python defaults
+
+Python targets get two OpenStack-aware defaults out of the box:
+
+- **oslo.service distro.** `OTEL_PYTHON_DISTRO=oslo_service` and
+  `OTEL_PYTHON_CONFIGURATOR=oslo_service` are set as part of the Python
+  language activation (override via `otel_languages`), so the agent bootstraps
+  the way OpenStack (oslo.service) expects.
+- **eventlet monkey-patching.** `otel_eventlet_services` is a list of service
+  names (default: all the eventlet daemons/servers — `*-conductor`,
+  `*-scheduler`, `*-compute`, `cinder-volume`, `cinder-backup`, `heat-engine`,
+  `neutron-server`, `glance-api`, `heat-api`). Any target whose name is in it
+  gets `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. The uWSGI/mod_wsgi services
+  (`keystone`, `nova-api`, `cinder-api`, `placement-api`) are deliberately
+  excluded, since monkey-patching them would be wrong. To mark extra eventlet
+  services (e.g. non-core ones you added via `otel_instrument_extra_services`)
+  without restating the built-in list, add their names to
+  `otel_eventlet_extra_services`; set `otel_eventlet_services: []` to disable
+  the built-ins entirely.
+
 ### Declarative environment
 
 The injected environment is **declarative**, not additive. The role records
@@ -86,24 +118,39 @@ and managed-env label.
 Because it sits in the path of *every* `kolla_container` task, it is
 deliberately conservative:
 
-- **Off by default.** It does nothing unless `otel_auto_instrument: true`
-  **and** `otel_exporter_endpoint` is set (put both, and the rest of the
-  `otel_*` config, in `globals.yml`). Otherwise it is a one-lookup
-  passthrough.
-- **Narrow scope.** It only augments the create/compare actions
+- **Tracks the switch.** For a targeted container it makes kolla's desired
+  spec match `otel_auto_instrument`: when `true` (put it, `otel_exporter_endpoint`
+  and the rest of the `otel_*` config in `globals.yml`) it re-applies the OTEL
+  env/mount/label so instrumentation survives `deploy`/`reconfigure`; when
+  `false` (the default) it strips any OTEL env/mount/label from the spec so the
+  container is recreated **without** instrumentation. kolla's own spec is
+  normally already clean, so the `false` path is usually a no-op — but it means
+  flipping the switch off and running `deploy`/`reconfigure` reliably removes
+  instrumentation, rather than leaving whatever is running in place.
+- **Narrow scope.** It only shapes the create/compare actions
   (`start_container`, `recreate_or_restart_container`, `compare_container`)
-  and only for containers in `otel_instrument_services`. Every other task is
-  passed through untouched. Augmenting `compare_container` is what makes kolla
-  notice missing instrumentation on `deploy`/`reconfigure` and fire its own
-  recreate handler; once instrumented the comparison matches, so nothing is
-  recreated needlessly.
+  and only for containers in `otel_instrument_services`. Every other task —
+  and an explicit `otel-rollback` (deferred to the role's more precise,
+  label-based de-instrumentation) — is passed through untouched. Shaping
+  `compare_container` is what makes kolla notice a mismatch with the desired
+  state on `deploy`/`reconfigure` and fire its own recreate handler; once the
+  running container matches, nothing is recreated needlessly.
 - **Fails open.** Any error while computing the overlay is logged as a warning
-  and the original task runs unmodified — instrumentation is best effort and
-  never breaks a deploy.
+  and the original task runs unmodified — it is best effort and never breaks a
+  deploy.
 
 The overlay logic is shared with this role via the dependency-free
 `kolla_otel.instrumentation` module (a test keeps the Python copy of the
 defaults in sync with `defaults/main.yml`).
+
+**Release compatibility.** Modern kolla-ansible drives containers through the
+`kolla_container` module; 2023.1 and earlier use `kolla_docker`. The plugin
+ships under **both** names (`action_plugins/kolla_container.py` and a
+`kolla_docker.py` that re-exports the same class) and delegates to whichever
+module Ansible invoked it as, so deploy/reconfigure persistence works on either
+release. (The `otel-instrument` / `otel-rollback` **playbooks** themselves use
+the modern `kolla_container_facts` interface and target current kolla-ansible;
+the action plugin is what carries 2023.1 support.)
 
 **Agent staging is automatic.** Before it mounts the agent, the plugin stages
 it on the host itself — pulling the image and copying the artifacts into
@@ -122,7 +169,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | --- | --- |
 | `otel_action` | `instrument` (default) or `rollback`. |
 | `otel_rollback_remove_agent` | On rollback, also delete staged agent artifacts from the host (default `true`). |
-| `otel_auto_instrument` | Enable the `kolla_container` action plugin so instrumentation persists across `deploy`/`reconfigure` (default `false`). |
+| `otel_auto_instrument` | Desired-state switch for the `kolla_container` action plugin: `true` keeps targets instrumented across `deploy`/`reconfigure`; `false` (default) keeps them de-instrumented (strips OTEL on recreate). |
 | `otel_exporter_endpoint` | **Required** (for `instrument`). OTLP collector endpoint. |
 | `otel_exporter_protocol` | `grpc` (default) or `http/protobuf`. |
 | `otel_deployment_environment` | Optional `deployment.environment` attribute. |
@@ -130,7 +177,10 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_host_lib_path` | Host base dir the agent is staged into (default `/etc/kolla/opentelemetry`). |
 | `otel_extra_environment` | Extra env applied to **every** service (map). |
 | `otel_managed_env_label` | Container label recording managed env keys (default `kolla_otel.managed_env`). |
-| `otel_instrument_services` | List of `{name, container_name, language}` targets; each entry also accepts optional `otel_service_name`, `resource_attributes` and `environment` (per-service extra env). |
+| `otel_instrument_services` | The target list. Defaults to the per-project `otel_services_*` lists gated by kolla's `enable_<project>` flags; override to take full control. Each entry is `{name, container_name, language}` plus optional `otel_service_name`, `resource_attributes`, `environment`. |
+| `otel_instrument_extra_services` | Additional targets **extending** (not replacing) `otel_instrument_services`, same entry schema. Add your own services here without restating the built-in list. |
+| `otel_eventlet_services` | Service names (by `name`) that get `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. Defaults to all eventlet daemons/servers; set `[]` to disable. |
+| `otel_eventlet_extra_services` | Additional eventlet service names **extending** (not replacing) `otel_eventlet_services`. Mark your own targets as needing eventlet without restating the built-in list. |
 | `otel_language_defaults` | Built-in per-language image, mount path and activation env (source of truth). |
 | `otel_languages` | Per-language **overrides**, deep-merged onto `otel_language_defaults` (set only the keys you change). |
 

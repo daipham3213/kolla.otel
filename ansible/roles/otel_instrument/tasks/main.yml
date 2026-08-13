@@ -13,6 +13,14 @@
       'otel_action' must be 'instrument' or 'rollback', got
       '{{ otel_action }}'.
 
+# The effective target list is the built-in/base services plus any the operator
+# adds via otel_instrument_extra_services (extend, don't override). Everything
+# below operates on this combined list.
+- name: Combine base and extra instrument services
+  ansible.builtin.set_fact:
+    otel_instrument_services_all: >-
+      {{ otel_instrument_services + otel_instrument_extra_services }}
+
 # When no external collector is configured, target the per-host local
 # collector (deployed by the otel_collector role). This makes the exporter
 # endpoint always well-defined, so there is nothing left to validate.
@@ -45,7 +53,7 @@
       Service '{{ item.name }}' uses unknown language '{{ item.language }}'.
       Known languages: {{ otel_language_defaults.keys() | list | join(', ') }}.
       Add it under 'otel_languages' or fix the 'language' field.
-  loop: "{{ otel_instrument_services }}"
+  loop: "{{ otel_instrument_services_all }}"
   loop_control:
     label: "{{ item.name }}"
 
@@ -63,13 +71,13 @@
   kolla_container_facts:
     container_engine: "{{ kolla_container_engine }}"
     action: get_containers
-    name: "{{ otel_instrument_services | map(attribute='container_name') | list }}"
+    name: "{{ otel_instrument_services_all | map(attribute='container_name') | list }}"
   register: otel_container_facts
 
 - name: Select the target services present on this host
   ansible.builtin.set_fact:
     otel_present_services: >-
-      {{ otel_instrument_services
+      {{ otel_instrument_services_all
          | selectattr('container_name', 'in',
                       otel_container_facts.containers.keys() | list)
          | list }}
