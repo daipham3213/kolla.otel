@@ -233,6 +233,25 @@ class KollaContainerActionTestCase:
         _plugin(args, sink).run(task_vars=dict(_ENABLED))
         assert "kolla_otel.managed_env" not in sink["args"]["labels"]
 
+    def test_rollback_action_is_passthrough(self):
+        """During otel-rollback the role recreates each container WITHOUT the
+        instrumentation; the plugin must step aside (not re-add it) so the
+        rollback actually removes the OTEL env/mount/label. Otherwise, with
+        otel_auto_instrument enabled, rollback would be silently defeated."""
+        sink = {}
+        task_vars = dict(_ENABLED, otel_action="rollback")
+        # The role's de-instrumented spec: OTEL env already stripped.
+        args = dict(_TARGET_ARGS, environment={"KOLLA_X": "1"})
+        _plugin(args, sink).run(task_vars=task_vars)
+        # Delegated unchanged: no OTEL env re-added, no mount, no label.
+        assert sink["args"]["environment"] == {"KOLLA_X": "1"}
+        assert "OTEL_SERVICE_NAME" not in sink["args"]["environment"]
+        assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+        assert not any(
+            "otel-auto-instrumentation" in v
+            for v in sink["args"].get("volumes", [])
+        )
+
     def test_compare_container_is_made_otel_aware(self):
         """compare_container gets the same overlay so kolla detects the diff
         and fires its recreate handler (which is then augmented too)."""

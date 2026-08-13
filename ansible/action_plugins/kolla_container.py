@@ -231,6 +231,23 @@ class ActionModule(ActionBase):
             )
             return module_args
 
+        # Gate 1b: never re-instrument during an explicit rollback. The
+        # otel-rollback playbook runs the otel_instrument role with
+        # otel_action=rollback, whose recreate deliberately strips the OTEL
+        # env, drops the agent bind-mount and removes the managed label. If we
+        # augmented that recreate we would put all of it straight back,
+        # silently defeating the rollback. Step aside so the role's
+        # de-instrumented spec is what kolla applies. (otel_action is absent
+        # during a normal deploy/reconfigure, so this only fires under
+        # otel-rollback.)
+        otel_action = self._var(task_vars, "otel_action", "instrument")
+        if str(otel_action) == "rollback":
+            display.vvv(
+                f"otel: '{label}': otel_action=rollback -> passthrough "
+                "(deferring to the role's de-instrumentation)"
+            )
+            return module_args
+
         from kolla_otel import instrumentation as instr
 
         # Gate 2: only container-create/compare actions carry a spec to
