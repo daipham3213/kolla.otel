@@ -396,6 +396,29 @@ class KollaContainerActionTestCase:
         assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
         assert "kolla_otel.managed_env" in sink["args"]["labels"]
 
+    def test_eventlet_extra_services_extend_the_list(self):
+        """otel_eventlet_extra_services adds to (not replaces) the eventlet
+        list, so a non-core target can be marked eventlet without restating
+        the built-in list."""
+        task_vars = dict(_ENABLED, otel_eventlet_extra_services=["nova-api"])
+        # nova-api is WSGI by default (not in otel_eventlet_services), but the
+        # extra list opts it in.
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(task_vars=task_vars)
+        assert (
+            sink["args"]["environment"]["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"]
+            == "true"
+        )
+        # ...and the built-in eventlet defaults still apply alongside it.
+        sink2 = {}
+        _plugin(dict(_TARGET_ARGS, name="nova_conductor"), sink2).run(
+            task_vars=task_vars
+        )
+        assert (
+            sink2["args"]["environment"]["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"]
+            == "true"
+        )
+
     def test_extra_services_extend_the_target_list(self):
         """otel_instrument_extra_services adds targets on top of the built-in
         list rather than replacing it."""

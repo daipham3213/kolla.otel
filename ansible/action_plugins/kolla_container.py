@@ -373,17 +373,22 @@ class ActionModule(ActionBase):
             service.get("resource_attributes") or {},
         )
         # Eventlet-based OpenStack services need the agent to monkey-patch
-        # first. Which services those are is a single overridable list
-        # (otel_eventlet_services, default: all eventlet services). Layer it as
-        # a managed default below the service's own environment, so an explicit
+        # first. The list is otel_eventlet_services (default: all eventlet
+        # services) plus anything the operator added via
+        # otel_eventlet_extra_services (extend, not override). Layer it as a
+        # managed default below the service's own environment, so an explicit
         # per-service value still wins.
         eventlet_services = self._var(
             task_vars, "otel_eventlet_services", None
         )
         if eventlet_services is None:
             eventlet_services = instr.DEFAULT_EVENTLET_SERVICES
+        eventlet_extra = self._var(
+            task_vars, "otel_eventlet_extra_services", None
+        )
         service_env = instr.eventlet_environment(
-            service.get("name", ""), eventlet_services
+            service.get("name", ""),
+            list(eventlet_services) + list(eventlet_extra or []),
         )
         service_env.update(service.get("environment") or {})
 

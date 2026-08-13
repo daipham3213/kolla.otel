@@ -31,11 +31,14 @@
 - name: "OTel | Build environment, labels and volumes | {{ otel_service.name }}"
   vars:
     # Eventlet monkey-patch env for this service (empty unless its name is in
-    # otel_eventlet_services), layered as a managed default below the service's
-    # own environment so an explicit per-service value still wins.
+    # otel_eventlet_services + otel_eventlet_extra_services), layered as a
+    # managed default below the service's own environment so an explicit
+    # per-service value still wins.
     otel_eventlet_env: >-
       {{ {'OTEL_PYTHON_EVENTLET_MONKEY_PATCH': 'true'}
-         if otel_service.name in otel_eventlet_services else {} }}
+         if otel_service.name in
+            (otel_eventlet_services + otel_eventlet_extra_services)
+         else {} }}
     # The full set of env this role manages for this service this run. Layered
     # lowest -> highest: common OTEL_* export vars, deployment-wide extra env,
     # this service's identity, the eventlet default, its own extra env, and

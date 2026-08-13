@@ -43,14 +43,17 @@ Python targets get two OpenStack-aware defaults out of the box:
   `OTEL_PYTHON_CONFIGURATOR=oslo_service` are set as part of the Python
   language activation (override via `otel_languages`), so the agent bootstraps
   the way OpenStack (oslo.service) expects.
-- **eventlet monkey-patching.** `otel_eventlet_services` is a single list of
-  service names (default: all the eventlet daemons/servers — `*-conductor`,
+- **eventlet monkey-patching.** `otel_eventlet_services` is a list of service
+  names (default: all the eventlet daemons/servers — `*-conductor`,
   `*-scheduler`, `*-compute`, `cinder-volume`, `cinder-backup`, `heat-engine`,
   `neutron-server`, `glance-api`, `heat-api`). Any target whose name is in it
   gets `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. The uWSGI/mod_wsgi services
   (`keystone`, `nova-api`, `cinder-api`, `placement-api`) are deliberately
-  excluded, since monkey-patching them would be wrong. Set it to `[]` to
-  disable everywhere, or edit the list if your deployment differs.
+  excluded, since monkey-patching them would be wrong. To mark extra eventlet
+  services (e.g. non-core ones you added via `otel_instrument_extra_services`)
+  without restating the built-in list, add their names to
+  `otel_eventlet_extra_services`; set `otel_eventlet_services: []` to disable
+  the built-ins entirely.
 
 ### Declarative environment
 
@@ -177,6 +180,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_instrument_services` | The target list. Defaults to the per-project `otel_services_*` lists gated by kolla's `enable_<project>` flags; override to take full control. Each entry is `{name, container_name, language}` plus optional `otel_service_name`, `resource_attributes`, `environment`. |
 | `otel_instrument_extra_services` | Additional targets **extending** (not replacing) `otel_instrument_services`, same entry schema. Add your own services here without restating the built-in list. |
 | `otel_eventlet_services` | Service names (by `name`) that get `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. Defaults to all eventlet daemons/servers; set `[]` to disable. |
+| `otel_eventlet_extra_services` | Additional eventlet service names **extending** (not replacing) `otel_eventlet_services`. Mark your own targets as needing eventlet without restating the built-in list. |
 | `otel_language_defaults` | Built-in per-language image, mount path and activation env (source of truth). |
 | `otel_languages` | Per-language **overrides**, deep-merged onto `otel_language_defaults` (set only the keys you change). |
 

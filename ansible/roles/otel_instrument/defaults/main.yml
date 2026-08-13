@@ -233,6 +233,15 @@ otel_eventlet_services:
   - heat-api
   - heat-engine
 
+# Additional eventlet service names, EXTENDING (not replacing)
+# otel_eventlet_services. Use this to mark your own targets (e.g. non-core
+# services added via otel_instrument_extra_services) as needing eventlet
+# monkey-patching, without restating the built-in list:
+#   otel_eventlet_extra_services:
+#     - neutron-ovn-metadata-agent
+#     - octavia-worker
+otel_eventlet_extra_services: []
+
 # Extra environment variables applied to every instrumented service, layered
 # above otel_common_environment and below each service's own `environment`.
 otel_extra_environment: {}
