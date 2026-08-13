@@ -111,6 +111,15 @@ The overlay logic is shared with this role via the dependency-free
 `kolla_otel.instrumentation` module (a test keeps the Python copy of the
 defaults in sync with `defaults/main.yml`).
 
+**Release compatibility.** Modern kolla-ansible drives containers through the
+`kolla_container` module; 2023.1 and earlier use `kolla_docker`. The plugin
+ships under **both** names (`action_plugins/kolla_container.py` and a
+`kolla_docker.py` that re-exports the same class) and delegates to whichever
+module Ansible invoked it as, so deploy/reconfigure persistence works on either
+release. (The `otel-instrument` / `otel-rollback` **playbooks** themselves use
+the modern `kolla_container_facts` interface and target current kolla-ansible;
+the action plugin is what carries 2023.1 support.)
+
 **Agent staging is automatic.** Before it mounts the agent, the plugin stages
 it on the host itself — pulling the image and copying the artifacts into
 `otel_host_lib_path` (mirroring the role's `stage.yml`), once per language per

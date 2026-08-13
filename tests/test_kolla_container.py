@@ -34,6 +34,22 @@ def _load_plugin_module():
 _PLUGIN_MOD = _load_plugin_module()
 ActionModule = _PLUGIN_MOD.ActionModule
 
+_SHIM_PATH = _PLUGIN_PATH.parent / "kolla_docker.py"
+
+
+def _load_shim_module():
+    """Load the ``kolla_docker`` backward-compat shim (2023.1 and earlier).
+
+    Each load re-executes the sibling plugin, so its per-run caches start
+    empty — no fixture reset needed.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "otel_kolla_docker_action", _SHIM_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 class _Templar:
     """Identity templar (test values contain no Jinja)."""
@@ -58,16 +74,24 @@ def _staging_result(module_name, module_args, stage_ok):
     return {"changed": True}  # file / copy
 
 
-def _plugin(task_args, executed_sink, stage_ok=True):
-    """Build an ActionModule instance wired with test doubles."""
-    plugin = ActionModule.__new__(ActionModule)
+def _plugin(
+    task_args, executed_sink, stage_ok=True, action="kolla_container", cls=None
+):
+    """Build an ActionModule instance wired with test doubles.
+
+    ``action`` is the module name Ansible invoked the plugin under
+    (``kolla_container`` on modern kolla-ansible, ``kolla_docker`` on 2023.1),
+    exposed as ``self._task.action``; the plugin delegates to it. ``cls`` lets
+    a test drive a different ActionModule (e.g. the ``kolla_docker`` shim's).
+    """
+    plugin = (cls or ActionModule).__new__(cls or ActionModule)
     plugin._task = types.SimpleNamespace(
-        args=dict(task_args), check_mode=False
+        args=dict(task_args), check_mode=False, action=action
     )
     plugin._templar = _Templar()
 
     def _execute_module(module_name, module_args, task_vars):
-        if module_name == "kolla_container":  # the delegated (final) call
+        if module_name == action:  # the delegated (final) call
             executed_sink["module_name"] = module_name
             executed_sink["args"] = module_args
             return {"changed": False}
@@ -397,3 +421,47 @@ class KollaContainerActionTestCase:
         result = plugin.run(task_vars=dict(_ENABLED))
         assert result == {"changed": False}
         assert sink["args"] == _TARGET_ARGS
+
+    def test_delegates_to_invoked_module_name(self):
+        """On kolla-ansible 2023.1 the plugin is invoked as ``kolla_docker``;
+        it must delegate to that module (not the modern ``kolla_container``),
+        while still applying the overlay."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink, action="kolla_docker").run(
+            task_vars=dict(_ENABLED)
+        )
+        # Delegated to the module Ansible invoked us as.
+        assert sink["module_name"] == "kolla_docker"
+        # ...and instrumentation was still applied on the 2023.1 path.
+        assert sink["args"]["environment"]["OTEL_SERVICE_NAME"] == "nova-api"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+    def test_delegates_to_kolla_container_by_default(self):
+        """Modern kolla-ansible invokes ``kolla_container``; delegate there."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(task_vars=dict(_ENABLED))
+        assert sink["module_name"] == "kolla_container"
+
+
+class KollaDockerShimTestCase:
+    """The ``kolla_docker`` backward-compat shim (kolla-ansible <= 2023.1)."""
+
+    def test_shim_reexports_the_same_action_module(self):
+        """The shim exposes an ActionModule that is the sibling's class."""
+        shim = _load_shim_module()
+        assert shim.ActionModule.__name__ == "ActionModule"
+        from ansible.plugins.action import ActionBase
+
+        assert issubclass(shim.ActionModule, ActionBase)
+
+    def test_shim_instruments_and_delegates_to_kolla_docker(self):
+        """Driven through the shim's class, a target is instrumented and the
+        delegate goes to ``kolla_docker`` — proving 2023.1 end to end."""
+        shim = _load_shim_module()
+        sink = {}
+        _plugin(
+            _TARGET_ARGS, sink, action="kolla_docker", cls=shim.ActionModule
+        ).run(task_vars=dict(_ENABLED))
+        assert sink["module_name"] == "kolla_docker"
+        assert sink["args"]["environment"]["OTEL_SERVICE_NAME"] == "nova-api"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]

@@ -28,8 +28,16 @@ analogue of the opentelemetry-operator's mutating webhook.
   the desired spec so a targeted container is recreated without it (a no-op
   when the spec is already clean, which it normally is).
 
+The same :class:`ActionModule` backs both container module names kolla-ansible
+has used: modern releases drive containers through ``kolla_container``, while
+2023.1 and earlier use ``kolla_docker``. ``run`` delegates to whichever name
+Ansible invoked it as, and the plugin ships under both (the sibling
+``kolla_docker.py`` re-exports this class), so instrumentation works across
+releases. Neither name has a stock kolla action plugin, so this is purely
+additive.
+
 Safety is the overriding concern, because this plugin is in the call path of
-*every* ``kolla_container`` task:
+*every* ``kolla_container`` / ``kolla_docker`` task:
 
 * It only ever shapes the create/compare actions (``start_container``,
   ``recreate_or_restart_container`` and ``compare_container``) and only for
@@ -95,9 +103,15 @@ class ActionModule(ActionBase):
                 f"(passing through unmodified): {exc}"
             )
 
+        # Delegate to whichever container module Ansible invoked us as, so a
+        # single implementation works across kolla-ansible releases: modern
+        # ones drive containers through ``kolla_container``, while 2023.1 and
+        # earlier use ``kolla_docker`` (the plugin ships under both names).
+        # Fall back to ``kolla_container`` if the action name is unavailable.
+        module_name = getattr(self._task, "action", None) or "kolla_container"
         result.update(
             self._execute_module(
-                module_name="kolla_container",
+                module_name=module_name,
                 module_args=module_args,
                 task_vars=task_vars,
             )
