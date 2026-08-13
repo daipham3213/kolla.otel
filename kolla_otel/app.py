@@ -14,10 +14,13 @@ so works regardless of the kolla-ansible CLI version::
     kolla-otel rollback   -i /etc/kolla/inventory
     kolla-otel collector  -i /etc/kolla/inventory [--remove]
 
-The commands themselves are unchanged (:mod:`kolla_otel.cli`); they still mix
-in kolla-ansible's ``KollaAnsibleMixin`` and run the same playbooks, so a
-working kolla-ansible install is still required — only the command *dispatch*
-is made independent of the kolla-ansible CLI. Commands are registered
+The commands themselves are unchanged (:mod:`kolla_otel.cli`) and run the same
+playbooks, so a working kolla-ansible install (the playbooks, roles and an
+inventory) is still required — only the command *dispatch* is made independent
+of the kolla-ansible CLI. Where kolla-ansible provides its Python CLI the
+commands use its ``KollaAnsibleMixin``/``run_playbooks``; where it does not
+(e.g. 18.8.0) they fall back to :class:`kolla_otel.localrun.LocalRunnerMixin`,
+which invokes ``ansible-playbook`` directly. Commands are registered
 imperatively (not via an entry-point namespace) so dispatch never depends on
 entry-point discovery working.
 """
