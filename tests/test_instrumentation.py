@@ -199,26 +199,47 @@ class InstrumentationTestCase:
             assert "OTEL_PYTHON_DISTRO" not in act
 
     def test_default_eventlet_services_classification(self) -> None:
-        """Eventlet daemons/servers are listed; uWSGI/mod_wsgi ones are not,
-        and every listed name is a real target."""
+        """Eventlet daemons/servers/agents are listed; uWSGI/mod_wsgi ones are
+        not, and every listed name is a real target."""
         eventlet = set(instr.DEFAULT_EVENTLET_SERVICES)
-        assert eventlet == {
+        # representative eventlet daemons, incl. neutron agents/workers
+        assert {
             "nova-conductor",
-            "nova-scheduler",
-            "nova-compute",
-            "cinder-scheduler",
             "cinder-volume",
-            "cinder-backup",
-            "neutron-server",
-            "glance-api",
-            "heat-api",
             "heat-engine",
-        }
+            "neutron-server",
+            "neutron-openvswitch-agent",
+            "neutron-ovn-metadata-agent",
+            "neutron-l3-agent",
+            "neutron-metering-agent",
+        } <= eventlet
         catalog = {s["name"] for s in instr.DEFAULT_SERVICES}
-        assert eventlet <= catalog  # every eventlet name is a known service
-        # the WSGI services are deliberately excluded
-        assert eventlet.isdisjoint(
-            {"keystone", "nova-api", "cinder-api", "placement-api"}
+        assert eventlet <= catalog  # every eventlet name is a known target
+        # the mod_wsgi/uWSGI services are deliberately excluded
+        assert eventlet.isdisjoint({"keystone", "placement-api"})
+
+    def test_neutron_group_covers_backends_and_features(self) -> None:
+        """The neutron group carries the agent/worker containers for OVS, OVN
+        and the common feature agents (all Python), not just neutron-server."""
+        neutron = {
+            s["container_name"]
+            for s in instr.DEFAULT_SERVICE_GROUPS["neutron"]["services"]
+        }
+        assert {
+            "neutron_server",
+            "neutron_openvswitch_agent",  # OVS backend
+            "neutron_ovn_metadata_agent",  # OVN backend
+            "neutron_dhcp_agent",
+            "neutron_l3_agent",
+            "neutron_metadata_agent",
+            "neutron_metering_agent",  # metering feature
+            "neutron_bgp_dragent",  # BGP feature
+            "neutron_sriov_agent",  # SR-IOV feature
+            "ironic_neutron_agent",  # ironic feature
+        } <= neutron
+        assert all(
+            s["language"] == "python"
+            for s in instr.DEFAULT_SERVICE_GROUPS["neutron"]["services"]
         )
 
     def test_default_services_gating(self) -> None:
