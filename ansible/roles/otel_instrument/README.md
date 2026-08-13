@@ -148,9 +148,12 @@ defaults in sync with `defaults/main.yml`).
 ships under **both** names (`action_plugins/kolla_container.py` and a
 `kolla_docker.py` that re-exports the same class) and delegates to whichever
 module Ansible invoked it as, so deploy/reconfigure persistence works on either
-release. (The `otel-instrument` / `otel-rollback` **playbooks** themselves use
-the modern `kolla_container_facts` interface and target current kolla-ansible;
-the action plugin is what carries 2023.1 support.)
+release. The `otel-instrument` / `otel-rollback` **playbooks** also run across
+releases: they gather each container's full inspect attrs via the newer
+`kolla_container_facts action=get_containers`, and on failure (older kolla —
+e.g. 18.8.0 — has no `action`, and its docker path returns only the `docker ps`
+summary) fall back to inspecting the containers directly with the container
+engine. Each container's current environment is derived from its `Config.Env`.
 
 **Agent staging is automatic.** Before it mounts the agent, the plugin stages
 it on the host itself — pulling the image and copying the artifacts into
