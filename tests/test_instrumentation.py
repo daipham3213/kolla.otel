@@ -188,6 +188,49 @@ class InstrumentationTestCase:
             "src:/m:ro"
         ]
 
+    def test_remove_agent_mount_drops_only_the_agent_bind(self) -> None:
+        binds = [
+            "/etc/kolla/nova:/var/lib/kolla/config_files:ro",
+            "/etc/kolla/opentelemetry/python:"
+            "/otel-auto-instrumentation-python:ro",
+        ]
+        assert instr.remove_agent_mount(
+            binds, "/otel-auto-instrumentation-python"
+        ) == ["/etc/kolla/nova:/var/lib/kolla/config_files:ro"]
+        # nothing to drop -> unchanged; None -> empty
+        assert instr.remove_agent_mount(binds, "/nope") == binds
+        assert instr.remove_agent_mount(None, "/m") == []
+
+    def test_managed_env_keys_mirrors_rollback_possible_keys(self) -> None:
+        keys = instr.managed_env_keys(
+            ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_TRACES_EXPORTER"],
+            ["MY_EXTRA"],
+            ["OTEL_TRACES_SAMPLER_ARG"],
+            ["PYTHONPATH"],
+        )
+        assert keys == [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_TRACES_EXPORTER",
+            "MY_EXTRA",
+            "OTEL_SERVICE_NAME",
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "OTEL_TRACES_SAMPLER_ARG",
+            "PYTHONPATH",
+        ]
+        # duplicates across sources are removed, order preserved
+        assert instr.managed_env_keys(
+            ["OTEL_SERVICE_NAME"], [], [], ["OTEL_SERVICE_NAME"]
+        ) == ["OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES"]
+
+    def test_strip_managed_environment_removes_only_named_keys(self) -> None:
+        env = {"KOLLA_X": "1", "OTEL_SERVICE_NAME": "s", "PYTHONPATH": "/a"}
+        assert instr.strip_managed_environment(
+            env, ["OTEL_SERVICE_NAME", "PYTHONPATH"]
+        ) == {"KOLLA_X": "1"}
+        # base env untouched when nothing matches; None -> {}
+        assert instr.strip_managed_environment(env, ["NOPE"]) == env
+        assert instr.strip_managed_environment(None, ["x"]) == {}
+
     def test_agent_bind_and_label(self) -> None:
         assert (
             instr.agent_bind("/etc/kolla/opentelemetry", "python", "/mnt")

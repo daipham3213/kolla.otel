@@ -86,20 +86,26 @@ and managed-env label.
 Because it sits in the path of *every* `kolla_container` task, it is
 deliberately conservative:
 
-- **Off by default.** It does nothing unless `otel_auto_instrument: true`
-  **and** `otel_exporter_endpoint` is set (put both, and the rest of the
-  `otel_*` config, in `globals.yml`). Otherwise it is a one-lookup
-  passthrough.
-- **Narrow scope.** It only augments the create/compare actions
+- **Tracks the switch.** For a targeted container it makes kolla's desired
+  spec match `otel_auto_instrument`: when `true` (put it, `otel_exporter_endpoint`
+  and the rest of the `otel_*` config in `globals.yml`) it re-applies the OTEL
+  env/mount/label so instrumentation survives `deploy`/`reconfigure`; when
+  `false` (the default) it strips any OTEL env/mount/label from the spec so the
+  container is recreated **without** instrumentation. kolla's own spec is
+  normally already clean, so the `false` path is usually a no-op — but it means
+  flipping the switch off and running `deploy`/`reconfigure` reliably removes
+  instrumentation, rather than leaving whatever is running in place.
+- **Narrow scope.** It only shapes the create/compare actions
   (`start_container`, `recreate_or_restart_container`, `compare_container`)
-  and only for containers in `otel_instrument_services`. Every other task is
-  passed through untouched. Augmenting `compare_container` is what makes kolla
-  notice missing instrumentation on `deploy`/`reconfigure` and fire its own
-  recreate handler; once instrumented the comparison matches, so nothing is
-  recreated needlessly.
+  and only for containers in `otel_instrument_services`. Every other task —
+  and an explicit `otel-rollback` (deferred to the role's more precise,
+  label-based de-instrumentation) — is passed through untouched. Shaping
+  `compare_container` is what makes kolla notice a mismatch with the desired
+  state on `deploy`/`reconfigure` and fire its own recreate handler; once the
+  running container matches, nothing is recreated needlessly.
 - **Fails open.** Any error while computing the overlay is logged as a warning
-  and the original task runs unmodified — instrumentation is best effort and
-  never breaks a deploy.
+  and the original task runs unmodified — it is best effort and never breaks a
+  deploy.
 
 The overlay logic is shared with this role via the dependency-free
 `kolla_otel.instrumentation` module (a test keeps the Python copy of the
@@ -122,7 +128,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | --- | --- |
 | `otel_action` | `instrument` (default) or `rollback`. |
 | `otel_rollback_remove_agent` | On rollback, also delete staged agent artifacts from the host (default `true`). |
-| `otel_auto_instrument` | Enable the `kolla_container` action plugin so instrumentation persists across `deploy`/`reconfigure` (default `false`). |
+| `otel_auto_instrument` | Desired-state switch for the `kolla_container` action plugin: `true` keeps targets instrumented across `deploy`/`reconfigure`; `false` (default) keeps them de-instrumented (strips OTEL on recreate). |
 | `otel_exporter_endpoint` | **Required** (for `instrument`). OTLP collector endpoint. |
 | `otel_exporter_protocol` | `grpc` (default) or `http/protobuf`. |
 | `otel_deployment_environment` | Optional `deployment.environment` attribute. |

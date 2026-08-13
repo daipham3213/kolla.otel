@@ -111,9 +111,65 @@ class KollaContainerActionTestCase:
     def test_disabled_by_default_is_passthrough(self):
         sink = {}
         _plugin(_TARGET_ARGS, sink).run(task_vars={})
-        # No opt-in -> args delegated unchanged.
+        # No opt-in and nothing OTEL in the spec -> delegated byte-for-byte.
         assert sink["args"] == _TARGET_ARGS
         assert "kolla_otel.managed_env" not in sink["args"]["labels"]
+
+    def test_disabled_strips_instrumentation_from_target(self):
+        """With auto_instrument off, a target container's desired spec is
+        stripped of any OTEL env/mount/label (by name, like rollback), so a
+        deploy/reconfigure recreates it without instrumentation."""
+        sink = {}
+        args = {
+            "action": "recreate_or_restart_container",
+            "name": "nova_api",
+            "environment": {
+                "KOLLA_X": "1",
+                "OTEL_SERVICE_NAME": "nova-api",
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317",
+                "OTEL_RESOURCE_ATTRIBUTES": "service.namespace=openstack",
+                "PYTHONPATH": "/otel-auto-instrumentation-python/x",
+            },
+            "volumes": [
+                "/etc/kolla/nova:/var/lib/kolla/config_files:ro",
+                "/etc/kolla/opentelemetry/python:"
+                "/otel-auto-instrumentation-python:ro",
+            ],
+            "labels": {
+                "kolla_version": "22",
+                "kolla_otel.managed_env": (
+                    "OTEL_SERVICE_NAME,OTEL_EXPORTER_OTLP_ENDPOINT,"
+                    "OTEL_RESOURCE_ATTRIBUTES,PYTHONPATH"
+                ),
+            },
+        }
+        _plugin(args, sink).run(task_vars={"otel_auto_instrument": False})
+        out = sink["args"]
+        # Every managed key gone; kolla's own env preserved.
+        assert out["environment"] == {"KOLLA_X": "1"}
+        # Agent mount dropped; the config mount stays.
+        assert out["volumes"] == [
+            "/etc/kolla/nova:/var/lib/kolla/config_files:ro"
+        ]
+        # Managed label removed; kolla's own labels stay.
+        assert "kolla_otel.managed_env" not in out["labels"]
+        assert out["labels"]["kolla_version"] == "22"
+
+    def test_disabled_does_not_stage_agent(self):
+        """De-instrumentation needs no agent, so the off path makes no host
+        module calls (no pull/copy) — only the kolla_container delegate."""
+        calls = []
+        sink = {}
+        plugin = _plugin(_TARGET_ARGS, sink)
+        inner = plugin._execute_module
+
+        def _record(module_name, module_args, task_vars):
+            calls.append(module_name)
+            return inner(module_name, module_args, task_vars)
+
+        plugin._execute_module = _record
+        plugin.run(task_vars={"otel_auto_instrument": False})
+        assert calls == ["kolla_container"]
 
     def test_enabled_target_container_is_instrumented(self):
         sink = {}

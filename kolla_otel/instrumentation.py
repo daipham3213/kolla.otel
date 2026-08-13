@@ -21,7 +21,7 @@ domain logic can be unit-tested without Ansible.
 """
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
@@ -46,6 +46,9 @@ __all__ = [
     "stage_paths",
     "agent_bind",
     "apply_agent_mount",
+    "remove_agent_mount",
+    "managed_env_keys",
+    "strip_managed_environment",
     "managed_label_value",
     "find_service",
     "collector_endpoint_port",
@@ -366,6 +369,20 @@ def agent_bind(host_lib_path: str, language: str, mount_path: str) -> str:
     return f"{host_lib_path}/{language}:{mount_path}:ro"
 
 
+def remove_agent_mount(
+    binds: Sequence[str] | None, mount_path: str
+) -> list[str]:
+    """Return ``binds`` with any bind whose destination is ``mount_path`` gone.
+
+    Drops any existing bind (named volume or host path) targeting
+    ``mount_path`` — the agent mount — mirroring the reject filter in
+    ``inject.yml`` / ``rollback.yml``. Used both to replace a stale mount
+    before adding ours and to strip it entirely on de-instrumentation.
+    """
+    pattern = re.compile(r"^[^:]+:" + re.escape(mount_path) + r"(:.*)?$")
+    return [b for b in (binds or []) if not pattern.match(b)]
+
+
 def apply_agent_mount(
     binds: Sequence[str] | None, mount_path: str, bind: str
 ) -> list[str]:
@@ -375,10 +392,54 @@ def apply_agent_mount(
     by an earlier run, named volume or host path) before appending ``bind``,
     so a recreate never hits "Duplicate mount point" — mirrors ``inject.yml``.
     """
-    pattern = re.compile(r"^[^:]+:" + re.escape(mount_path) + r"(:.*)?$")
-    kept = [b for b in (binds or []) if not pattern.match(b)]
+    kept = remove_agent_mount(binds, mount_path)
     kept.append(bind)
     return kept
+
+
+def managed_env_keys(
+    common_env_keys: Iterable[str],
+    extra_env_keys: Iterable[str],
+    service_env_keys: Iterable[str],
+    activation_keys: Iterable[str],
+) -> list[str]:
+    """Return every env var name this project could manage for a service.
+
+    Computed from names alone (no exporter endpoint needed), mirroring
+    ``rollback.yml``'s ``otel_possible_keys``: the shared ``OTEL_*`` export
+    vars, deployment-wide extra env, the service identity vars
+    (``OTEL_SERVICE_NAME`` / ``OTEL_RESOURCE_ATTRIBUTES``), the service's own
+    extra env and the language activation env. Used to strip instrumentation
+    without consulting the running container's recorded label. Order is
+    preserved and duplicates removed.
+    """
+    ordered = [
+        *common_env_keys,
+        *extra_env_keys,
+        "OTEL_SERVICE_NAME",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        *service_env_keys,
+        *activation_keys,
+    ]
+    seen: set[str] = set()
+    result: list[str] = []
+    for key in ordered:
+        if key not in seen:
+            seen.add(key)
+            result.append(key)
+    return result
+
+
+def strip_managed_environment(
+    environment: Mapping[str, str], keys: Iterable[str]
+) -> dict[str, str]:
+    """Return ``environment`` with every name in ``keys`` removed.
+
+    Leaves the base-image and kolla env untouched — mirrors the
+    ``rejectattr('key', 'in', ...)`` in ``rollback.yml``.
+    """
+    remove = set(keys)
+    return {k: v for k, v in (environment or {}).items() if k not in remove}
 
 
 def managed_label_value(managed_env: Mapping[str, str]) -> str:
