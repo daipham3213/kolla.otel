@@ -23,6 +23,35 @@ of the operator's Kubernetes init-container pattern.
      variables (`PYTHONPATH`, `JAVA_TOOL_OPTIONS`, `NODE_OPTIONS`, CoreCLR
      hooks).
 
+### Default targets follow kolla's `enable_*` flags
+
+You don't hand-maintain the container list. The default `otel_instrument_services`
+is assembled from per-project lists (`otel_services_nova`, `otel_services_cinder`,
+…) and gated by kolla's own `enable_<project>` flags — so it tracks what kolla
+actually deployed: `enable_cinder: true` instruments the cinder containers,
+leaving it off drops them, exactly like `enable_octavia` deploys octavia. Core
+projects (keystone, nova, glance, neutron, placement, heat) are on by default
+(via their kolla flags); cinder follows `enable_cinder` (off in kolla by
+default). To take full control, set `otel_instrument_services` yourself, or add
+targets with `otel_instrument_extra_services` (which *extends* the gated list).
+
+### OpenStack Python defaults
+
+Python targets get two OpenStack-aware defaults out of the box:
+
+- **oslo.service distro.** `OTEL_PYTHON_DISTRO=oslo_service` and
+  `OTEL_PYTHON_CONFIGURATOR=oslo_service` are set as part of the Python
+  language activation (override via `otel_languages`), so the agent bootstraps
+  the way OpenStack (oslo.service) expects.
+- **eventlet monkey-patching.** `otel_eventlet_services` is a single list of
+  service names (default: all the eventlet daemons/servers — `*-conductor`,
+  `*-scheduler`, `*-compute`, `cinder-volume`, `cinder-backup`, `heat-engine`,
+  `neutron-server`, `glance-api`, `heat-api`). Any target whose name is in it
+  gets `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. The uWSGI/mod_wsgi services
+  (`keystone`, `nova-api`, `cinder-api`, `placement-api`) are deliberately
+  excluded, since monkey-patching them would be wrong. Set it to `[]` to
+  disable everywhere, or edit the list if your deployment differs.
+
 ### Declarative environment
 
 The injected environment is **declarative**, not additive. The role records
@@ -145,7 +174,9 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_host_lib_path` | Host base dir the agent is staged into (default `/etc/kolla/opentelemetry`). |
 | `otel_extra_environment` | Extra env applied to **every** service (map). |
 | `otel_managed_env_label` | Container label recording managed env keys (default `kolla_otel.managed_env`). |
-| `otel_instrument_services` | List of `{name, container_name, language}` targets; each entry also accepts optional `otel_service_name`, `resource_attributes` and `environment` (per-service extra env). |
+| `otel_instrument_services` | The target list. Defaults to the per-project `otel_services_*` lists gated by kolla's `enable_<project>` flags; override to take full control. Each entry is `{name, container_name, language}` plus optional `otel_service_name`, `resource_attributes`, `environment`. |
+| `otel_instrument_extra_services` | Additional targets **extending** (not replacing) `otel_instrument_services`, same entry schema. Add your own services here without restating the built-in list. |
+| `otel_eventlet_services` | Service names (by `name`) that get `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. Defaults to all eventlet daemons/servers; set `[]` to disable. |
 | `otel_language_defaults` | Built-in per-language image, mount path and activation env (source of truth). |
 | `otel_languages` | Per-language **overrides**, deep-merged onto `otel_language_defaults` (set only the keys you change). |
 

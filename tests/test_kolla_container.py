@@ -367,6 +367,63 @@ class KollaContainerActionTestCase:
         assert "JAVA_TOOL_OPTIONS" in env  # java activation
         assert env["OTEL_SERVICE_NAME"] == "svc"
 
+    def test_python_activation_sets_oslo_service_distro(self):
+        """Every Python target gets the oslo.service OTEL distro/configurator
+        by default (language activation)."""
+        sink = {}
+        _plugin(_TARGET_ARGS, sink).run(task_vars=dict(_ENABLED))
+        env = sink["args"]["environment"]
+        assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
+        assert env["OTEL_PYTHON_CONFIGURATOR"] == "oslo_service"
+
+    def test_eventlet_service_gets_monkey_patch(self):
+        """An eventlet-based service (nova_conductor) is told to monkey-patch
+        the runtime before instrumenting."""
+        sink = {}
+        args = dict(_TARGET_ARGS, name="nova_conductor")
+        _plugin(args, sink).run(task_vars=dict(_ENABLED))
+        env = sink["args"]["environment"]
+        assert env["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"] == "true"
+
+    def test_wsgi_service_has_no_monkey_patch(self):
+        """A uWSGI/mod_wsgi service (keystone) must NOT be monkey-patched."""
+        sink = {}
+        args = dict(_TARGET_ARGS, name="keystone")
+        _plugin(args, sink).run(task_vars=dict(_ENABLED))
+        env = sink["args"]["environment"]
+        assert "OTEL_PYTHON_EVENTLET_MONKEY_PATCH" not in env
+        # ...but it is still instrumented (distro + activation applied).
+        assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+    def test_extra_services_extend_the_target_list(self):
+        """otel_instrument_extra_services adds targets on top of the built-in
+        list rather than replacing it."""
+        sink = {}
+        task_vars = dict(
+            _ENABLED,
+            otel_instrument_extra_services=[
+                {
+                    "name": "mysvc",
+                    "container_name": "my_svc",
+                    "language": "python",
+                }
+            ],
+        )
+        # A container only present in the extra list is instrumented.
+        _plugin(dict(_TARGET_ARGS, name="my_svc"), sink).run(
+            task_vars=task_vars
+        )
+        assert sink["args"]["environment"]["OTEL_SERVICE_NAME"] == "mysvc"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]
+
+        # ...and the built-in defaults still apply alongside it.
+        sink2 = {}
+        _plugin(dict(_TARGET_ARGS, name="nova_api"), sink2).run(
+            task_vars=task_vars
+        )
+        assert sink2["args"]["environment"]["OTEL_SERVICE_NAME"] == "nova-api"
+
     def test_staging_stages_agent_then_instruments(self):
         """A target is staged (pull + copy) before the overlay is applied."""
         calls = []

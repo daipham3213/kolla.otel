@@ -278,11 +278,24 @@ class ActionModule(ActionBase):
             display.vvv("otel: task has no container name -> passthrough")
             return module_args
 
-        # Gate 4: this container must be a configured target.
+        # Gate 4: this container must be a configured target. The effective
+        # list is the base services plus any the operator added via
+        # otel_instrument_extra_services (extend, not override). The base is
+        # either an explicit otel_instrument_services from globals.yml, or the
+        # built-in defaults gated by kolla's enable_<project> flags, so a plain
+        # deploy only instruments projects kolla actually deployed, mirroring
+        # the role.
+        def _is_enabled(flag, fallback):
+            value = self._var(task_vars, flag, None)
+            if value is None:
+                return fallback
+            return boolean(value, strict=False)
+
         services = self._var(task_vars, "otel_instrument_services", None)
         if services is None:
-            services = instr.DEFAULT_SERVICES
-        service = instr.find_service(services, name)
+            services = instr.default_services(_is_enabled)
+        extra = self._var(task_vars, "otel_instrument_extra_services", None)
+        service = instr.find_service(list(services) + list(extra or []), name)
         if service is None:
             display.vvv(
                 f"otel: '{label}': not in otel_instrument_services "
@@ -359,12 +372,27 @@ class ActionModule(ActionBase):
             self._var(task_vars, "otel_resource_attributes_extra", {}) or {},
             service.get("resource_attributes") or {},
         )
+        # Eventlet-based OpenStack services need the agent to monkey-patch
+        # first. Which services those are is a single overridable list
+        # (otel_eventlet_services, default: all eventlet services). Layer it as
+        # a managed default below the service's own environment, so an explicit
+        # per-service value still wins.
+        eventlet_services = self._var(
+            task_vars, "otel_eventlet_services", None
+        )
+        if eventlet_services is None:
+            eventlet_services = instr.DEFAULT_EVENTLET_SERVICES
+        service_env = instr.eventlet_environment(
+            service.get("name", ""), eventlet_services
+        )
+        service_env.update(service.get("environment") or {})
+
         managed = instr.managed_environment(
             common_env,
             self._var(task_vars, "otel_extra_environment", {}) or {},
             service.get("otel_service_name") or service.get("name", ""),
             instr.resource_attributes_string(attrs),
-            service.get("environment") or {},
+            service_env,
             lang["activation"],
         )
         env_label = str(
@@ -423,7 +451,8 @@ class ActionModule(ActionBase):
         removable = instr.managed_env_keys(
             instr.COMMON_ENV_MAP.keys(),
             (self._var(task_vars, "otel_extra_environment", {}) or {}).keys(),
-            (service.get("environment") or {}).keys(),
+            # include the eventlet key (managed separately from service env)
+            [*(service.get("environment") or {}), instr.EVENTLET_ENV_KEY],
             lang["activation"].keys(),
         )
 

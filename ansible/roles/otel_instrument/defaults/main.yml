@@ -110,6 +110,11 @@ otel_language_defaults:
     mount_path: "/otel-auto-instrumentation-python"
     activation:
       PYTHONPATH: "/otel-auto-instrumentation-python/opentelemetry/instrumentation/auto_instrumentation:/otel-auto-instrumentation-python"
+      # OpenStack services build on oslo.service; its OpenTelemetry
+      # distro/configurator wires the SDK up the way OpenStack expects. Applied
+      # as activation so it is always set for the Python agent.
+      OTEL_PYTHON_DISTRO: "oslo_service"
+      OTEL_PYTHON_CONFIGURATOR: "oslo_service"
   java:
     image_component: "autoinstrumentation-java"
     source_path: "/javaagent.jar"
@@ -148,6 +153,13 @@ otel_languages: {}
 # containers actually present on a host are touched, so the same list is safe
 # across controllers and compute nodes.
 #
+# The default target list is assembled from per-project lists below and gated
+# by kolla's own `enable_<project>` flags — so it tracks what kolla actually
+# deployed: enabling a project (e.g. `enable_cinder: true`) instruments its
+# services, disabling it drops them, just like `enable_octavia` deploys octavia.
+# Override `otel_instrument_services` wholesale to take full control, or add to
+# it with `otel_instrument_extra_services` (below).
+#
 # Optional per-service keys:
 #   otel_service_name    - override OTEL_SERVICE_NAME
 #   resource_attributes  - extra OTEL_RESOURCE_ATTRIBUTES (map)
@@ -159,26 +171,67 @@ otel_languages: {}
 #       environment:
 #         OTEL_TRACES_SAMPLER_ARG: "0.1"
 #         OTEL_PYTHON_LOG_CORRELATION: "true"
-otel_instrument_services:
-  # Nova
+otel_services_keystone:
+  - {name: keystone, container_name: keystone, language: python}
+otel_services_nova:
   - {name: nova-api, container_name: nova_api, language: python}
   - {name: nova-conductor, container_name: nova_conductor, language: python}
   - {name: nova-scheduler, container_name: nova_scheduler, language: python}
   # nova_compute runs privileged with ipc_mode=host; the role reads those back
   # from the running container and re-applies them on recreate (see README).
   - {name: nova-compute, container_name: nova_compute, language: python}
-  # Cinder
+otel_services_cinder:
   - {name: cinder-api, container_name: cinder_api, language: python}
   - {name: cinder-scheduler, container_name: cinder_scheduler, language: python}
   - {name: cinder-volume, container_name: cinder_volume, language: python}
   - {name: cinder-backup, container_name: cinder_backup, language: python}
-  # Other core services
-  - {name: keystone, container_name: keystone, language: python}
+otel_services_glance:
   - {name: glance-api, container_name: glance_api, language: python}
+otel_services_neutron:
   - {name: neutron-server, container_name: neutron_server, language: python}
+otel_services_placement:
   - {name: placement-api, container_name: placement_api, language: python}
+otel_services_heat:
   - {name: heat-api, container_name: heat_api, language: python}
   - {name: heat-engine, container_name: heat_engine, language: python}
+
+# Effective default target list: each project's services, included only when
+# kolla's enable_<project> flag is truthy. In a real kolla run every enable_*
+# is defined; the `default(...)` fallbacks only apply if one is somehow absent.
+otel_instrument_services: >-
+  {{ (otel_services_keystone if (enable_keystone | default(true) | bool) else [])
+     + (otel_services_nova if (enable_nova | default(true) | bool) else [])
+     + (otel_services_cinder if (enable_cinder | default(false) | bool) else [])
+     + (otel_services_glance if (enable_glance | default(true) | bool) else [])
+     + (otel_services_neutron if (enable_neutron | default(true) | bool) else [])
+     + (otel_services_placement if (enable_placement | default(true) | bool) else [])
+     + (otel_services_heat if (enable_heat | default(true) | bool) else []) }}
+
+# Additional services to instrument, EXTENDING (not replacing)
+# otel_instrument_services. Use this to add your own targets without having to
+# restate the built-in list: the role and the action plugin both act on
+# `otel_instrument_services + otel_instrument_extra_services`. Same entry schema
+# as above (name, container_name, language, and optional otel_service_name /
+# resource_attributes / environment).
+otel_instrument_extra_services: []
+
+# Services (by `name`) whose Python process runs under eventlet and so need the
+# agent to eventlet-monkey-patch before instrumenting. Any target whose name is
+# in this list gets OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true. Defaults to all the
+# eventlet daemons/servers; it deliberately excludes the uWSGI/mod_wsgi services
+# (keystone, nova-api, cinder-api, placement-api), where monkey-patching would
+# be wrong. Set to [] to disable everywhere, or adjust for your deployment.
+otel_eventlet_services:
+  - nova-conductor
+  - nova-scheduler
+  - nova-compute
+  - cinder-scheduler
+  - cinder-volume
+  - cinder-backup
+  - neutron-server
+  - glance-api
+  - heat-api
+  - heat-engine
 
 # Extra environment variables applied to every instrumented service, layered
 # above otel_common_environment and below each service's own `environment`.

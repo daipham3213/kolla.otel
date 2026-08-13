@@ -21,7 +21,7 @@ domain logic can be unit-tested without Ansible.
 """
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
@@ -29,7 +29,12 @@ __all__ = [
     "LANGUAGE_DEFAULTS",
     "COMMON_ENV_MAP",
     "SCALAR_DEFAULTS",
+    "DEFAULT_SERVICE_GROUPS",
     "DEFAULT_SERVICES",
+    "DEFAULT_EVENTLET_SERVICES",
+    "EVENTLET_ENV_KEY",
+    "default_services",
+    "eventlet_environment",
     "DEFAULT_HOST_LIB_PATH",
     "DEFAULT_MANAGED_ENV_LABEL",
     "DEFAULT_IMAGE_REGISTRY",
@@ -117,6 +122,12 @@ LANGUAGE_DEFAULTS: dict[str, dict[str, Any]] = {
                 "instrumentation/auto_instrumentation:"
                 "/otel-auto-instrumentation-python"
             ),
+            # OpenStack services build on oslo.service; its OpenTelemetry
+            # distro/configurator wires the SDK up the way OpenStack expects
+            # (config via oslo.config, correct service naming, …). Applied as
+            # activation so it is always set for the Python agent.
+            "OTEL_PYTHON_DISTRO": "oslo_service",
+            "OTEL_PYTHON_CONFIGURATOR": "oslo_service",
         },
     },
     "java": {
@@ -195,69 +206,158 @@ SCALAR_DEFAULTS: dict[str, str] = {
 }
 
 
-#: Default target services. Mirrors ``otel_instrument_services`` in the role
-#: defaults so the plugin instruments the same containers during a plain
-#: ``deploy`` when the operator has not listed them in globals.yml (kept in
-#: sync by test_instrumentation.py).
-DEFAULT_SERVICES: list[dict[str, str]] = [
-    {"name": "nova-api", "container_name": "nova_api", "language": "python"},
-    {
-        "name": "nova-conductor",
-        "container_name": "nova_conductor",
-        "language": "python",
+#: Default target services grouped by the OpenStack project (and the kolla
+#: ``enable_<project>`` flag that gates it), so the effective target list
+#: tracks what kolla actually deployed — enabling a project instruments its
+#: services, disabling it drops them, like ``enable_octavia`` deploys octavia.
+#: ``enable_default`` is the fallback used only when the flag is absent from
+#: the run's variables (in a real kolla run every ``enable_*`` is defined).
+#: Mirrors
+#: the per-project ``otel_services_*`` vars in the role defaults (kept in sync
+#: by test_instrumentation.py).
+DEFAULT_SERVICE_GROUPS: dict[str, dict[str, Any]] = {
+    "keystone": {
+        "enable_flag": "enable_keystone",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "keystone",
+                "container_name": "keystone",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "nova-scheduler",
-        "container_name": "nova_scheduler",
-        "language": "python",
+    "nova": {
+        "enable_flag": "enable_nova",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "nova-api",
+                "container_name": "nova_api",
+                "language": "python",
+            },
+            {
+                "name": "nova-conductor",
+                "container_name": "nova_conductor",
+                "language": "python",
+            },
+            {
+                "name": "nova-scheduler",
+                "container_name": "nova_scheduler",
+                "language": "python",
+            },
+            {
+                "name": "nova-compute",
+                "container_name": "nova_compute",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "nova-compute",
-        "container_name": "nova_compute",
-        "language": "python",
+    "cinder": {
+        "enable_flag": "enable_cinder",
+        "enable_default": False,
+        "services": [
+            {
+                "name": "cinder-api",
+                "container_name": "cinder_api",
+                "language": "python",
+            },
+            {
+                "name": "cinder-scheduler",
+                "container_name": "cinder_scheduler",
+                "language": "python",
+            },
+            {
+                "name": "cinder-volume",
+                "container_name": "cinder_volume",
+                "language": "python",
+            },
+            {
+                "name": "cinder-backup",
+                "container_name": "cinder_backup",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-api",
-        "container_name": "cinder_api",
-        "language": "python",
+    "glance": {
+        "enable_flag": "enable_glance",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "glance-api",
+                "container_name": "glance_api",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-scheduler",
-        "container_name": "cinder_scheduler",
-        "language": "python",
+    "neutron": {
+        "enable_flag": "enable_neutron",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "neutron-server",
+                "container_name": "neutron_server",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-volume",
-        "container_name": "cinder_volume",
-        "language": "python",
+    "placement": {
+        "enable_flag": "enable_placement",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "placement-api",
+                "container_name": "placement_api",
+                "language": "python",
+            },
+        ],
     },
-    {
-        "name": "cinder-backup",
-        "container_name": "cinder_backup",
-        "language": "python",
+    "heat": {
+        "enable_flag": "enable_heat",
+        "enable_default": True,
+        "services": [
+            {
+                "name": "heat-api",
+                "container_name": "heat_api",
+                "language": "python",
+            },
+            {
+                "name": "heat-engine",
+                "container_name": "heat_engine",
+                "language": "python",
+            },
+        ],
     },
-    {"name": "keystone", "container_name": "keystone", "language": "python"},
-    {
-        "name": "glance-api",
-        "container_name": "glance_api",
-        "language": "python",
-    },
-    {
-        "name": "neutron-server",
-        "container_name": "neutron_server",
-        "language": "python",
-    },
-    {
-        "name": "placement-api",
-        "container_name": "placement_api",
-        "language": "python",
-    },
-    {"name": "heat-api", "container_name": "heat_api", "language": "python"},
-    {
-        "name": "heat-engine",
-        "container_name": "heat_engine",
-        "language": "python",
-    },
+}
+
+#: The full, ungated catalog (every group flattened), handy for reference and
+#: tests. The plugin uses :func:`default_services` to gate this by the flags.
+DEFAULT_SERVICES: list[dict[str, Any]] = [
+    dict(service)
+    for group in DEFAULT_SERVICE_GROUPS.values()
+    for service in group["services"]
+]
+
+#: Service names (the hyphenated ``name``) whose Python process runs under
+#: eventlet and therefore needs the agent to monkey-patch before instrumenting.
+#: The RPC/worker daemons and the eventlet-based API servers; NOT the
+#: uWSGI/mod_wsgi services (keystone, nova-api, cinder-api, placement-api),
+#: where monkey-patching would be wrong. Mirrors ``otel_eventlet_services`` in
+#: the role defaults (kept in sync by test_instrumentation.py).
+#: The env var that tells the Python agent to eventlet-monkey-patch first.
+EVENTLET_ENV_KEY = "OTEL_PYTHON_EVENTLET_MONKEY_PATCH"
+
+DEFAULT_EVENTLET_SERVICES: list[str] = [
+    "nova-conductor",
+    "nova-scheduler",
+    "nova-compute",
+    "cinder-scheduler",
+    "cinder-volume",
+    "cinder-backup",
+    "neutron-server",
+    "glance-api",
+    "heat-api",
+    "heat-engine",
 ]
 
 
@@ -461,6 +561,39 @@ def find_service(
         if candidate == container_name:
             return dict(service)
     return None
+
+
+def default_services(
+    is_enabled: Callable[[str, bool], bool],
+) -> list[dict[str, Any]]:
+    """Return the enable-gated default target list.
+
+    Includes a project group's services only when its ``enable_<project>`` flag
+    is truthy, so the list tracks what kolla deployed. ``is_enabled`` is called
+    as ``is_enabled(flag_name, fallback)`` and should resolve the flag from the
+    run's variables, using ``fallback`` when it is absent. Mirrors the
+    ``otel_instrument_services`` composition in the role defaults.
+    """
+    result: list[dict[str, Any]] = []
+    for group in DEFAULT_SERVICE_GROUPS.values():
+        if is_enabled(group["enable_flag"], group["enable_default"]):
+            result.extend(dict(service) for service in group["services"])
+    return result
+
+
+def eventlet_environment(
+    service_name: str, eventlet_services: Sequence[str] | None
+) -> dict[str, str]:
+    """Return the eventlet monkey-patch env for ``service_name``, or ``{}``.
+
+    ``{"OTEL_PYTHON_EVENTLET_MONKEY_PATCH": "true"}`` when the service is in
+    ``eventlet_services`` (the operator's ``otel_eventlet_services`` list, or
+    :data:`DEFAULT_EVENTLET_SERVICES`), else an empty dict. Layered as a
+    managed default below the service's own ``environment`` (overridable).
+    """
+    if service_name in (eventlet_services or []):
+        return {EVENTLET_ENV_KEY: "true"}
+    return {}
 
 
 def collector_endpoint_port(

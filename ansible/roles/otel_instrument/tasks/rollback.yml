@@ -28,10 +28,13 @@
       {{ ((otel_attrs.Config.Labels | default({}))
           .get(otel_managed_env_label, '')).split(',') | select | list }}
     # Every env key this role could have set, by name only (no endpoint needed).
+    # Includes the eventlet monkey-patch key, which the inject path may set for
+    # eventlet services independently of a service's own `environment`.
     otel_possible_keys: >-
       {{ (otel_common_environment.keys() | list)
          + (otel_extra_environment.keys() | list)
-         + ['OTEL_SERVICE_NAME', 'OTEL_RESOURCE_ATTRIBUTES']
+         + ['OTEL_SERVICE_NAME', 'OTEL_RESOURCE_ATTRIBUTES',
+            'OTEL_PYTHON_EVENTLET_MONKEY_PATCH']
          + (otel_service.environment | default({})).keys() | list
          + (otel_lang.activation.keys() | list) }}
     otel_strip_keys: "{{ (otel_prev_keys + otel_possible_keys) | unique }}"
