@@ -35,6 +35,17 @@ projects (keystone, nova, glance, neutron, placement, heat) are on by default
 default). To take full control, set `otel_instrument_services` yourself, or add
 targets with `otel_instrument_extra_services` (which *extends* the gated list).
 
+Within a project, the group lists every relevant container and only those
+**actually present** on a host are instrumented — so neutron's many
+agent/worker containers are covered automatically across backends and features
+(OVS: `neutron-openvswitch-agent`; OVN: `neutron-ovn-metadata-agent`,
+`neutron-ovn-maintenance-worker`; plus `neutron-dhcp-agent`, `neutron-l3-agent`,
+`neutron-metadata-agent`, `neutron-metering-agent`, `neutron-bgp-dragent`,
+`neutron-sriov-agent`, `ironic-neutron-agent`). Enable a feature/backend in
+kolla and its agents get instrumented where they land; disable it and they are
+simply absent. Vendor plugins (mlnx/eswitchd/infoblox) can be added via
+`otel_instrument_extra_services`.
+
 ### OpenStack Python defaults
 
 Python targets get two OpenStack-aware defaults out of the box:
@@ -44,16 +55,15 @@ Python targets get two OpenStack-aware defaults out of the box:
   language activation (override via `otel_languages`), so the agent bootstraps
   the way OpenStack (oslo.service) expects.
 - **eventlet monkey-patching.** `otel_eventlet_services` is a list of service
-  names (default: all the eventlet daemons/servers — `*-conductor`,
-  `*-scheduler`, `*-compute`, `cinder-volume`, `cinder-backup`, `heat-engine`,
-  `neutron-server`, `glance-api`, `heat-api`). Any target whose name is in it
-  gets `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. The uWSGI/mod_wsgi services
-  (`keystone`, `nova-api`, `cinder-api`, `placement-api`) are deliberately
-  excluded, since monkey-patching them would be wrong. To mark extra eventlet
-  services (e.g. non-core ones you added via `otel_instrument_extra_services`)
-  without restating the built-in list, add their names to
-  `otel_eventlet_extra_services`; set `otel_eventlet_services: []` to disable
-  the built-ins entirely.
+  names (default: the nova/cinder API + daemons, every neutron agent/worker,
+  `glance-api`, `heat-api`, `heat-engine`). Any target whose name is in it gets
+  `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. `keystone` and `placement-api` are
+  excluded (mod_wsgi/uWSGI, where monkey-patching would be wrong); if your
+  deployment runs a given API differently, adjust `otel_eventlet_services`. To
+  mark extra eventlet services (e.g. non-core ones you added via
+  `otel_instrument_extra_services`) without restating the built-in list, add
+  their names to `otel_eventlet_extra_services`; set `otel_eventlet_services: []`
+  to disable the built-ins entirely.
 
 ### Declarative environment
 
@@ -148,9 +158,12 @@ defaults in sync with `defaults/main.yml`).
 ships under **both** names (`action_plugins/kolla_container.py` and a
 `kolla_docker.py` that re-exports the same class) and delegates to whichever
 module Ansible invoked it as, so deploy/reconfigure persistence works on either
-release. (The `otel-instrument` / `otel-rollback` **playbooks** themselves use
-the modern `kolla_container_facts` interface and target current kolla-ansible;
-the action plugin is what carries 2023.1 support.)
+release. The `otel-instrument` / `otel-rollback` **playbooks** also run across
+releases: they gather each container's full inspect attrs via the newer
+`kolla_container_facts action=get_containers`, and on failure (older kolla —
+e.g. 18.8.0 — has no `action`, and its docker path returns only the `docker ps`
+summary) fall back to inspecting the containers directly with the container
+engine. Each container's current environment is derived from its `Config.Env`.
 
 **Agent staging is automatic.** Before it mounts the agent, the plugin stages
 it on the host itself — pulling the image and copying the artifacts into

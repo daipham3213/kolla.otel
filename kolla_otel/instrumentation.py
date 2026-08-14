@@ -293,10 +293,77 @@ DEFAULT_SERVICE_GROUPS: dict[str, dict[str, Any]] = {
     "neutron": {
         "enable_flag": "enable_neutron",
         "enable_default": True,
+        # neutron deploys a family of agent/worker containers that varies by
+        # backend (openvswitch / ovn) and features (DVR, metering, BGP, SR-IOV,
+        # ironic). They are all Python and eventlet-based; list the mainstream
+        # ones here — only those actually present on a host are instrumented,
+        # so the same list is correct across backends and node roles. Vendor
+        # plugins (mlnx/eswitchd/infoblox) can be added via
+        # otel_instrument_extra_services.
         "services": [
             {
                 "name": "neutron-server",
                 "container_name": "neutron_server",
+                "language": "python",
+            },
+            {
+                "name": "neutron-rpc-server",
+                "container_name": "neutron_rpc_server",
+                "language": "python",
+            },
+            {
+                "name": "neutron-periodic-worker",
+                "container_name": "neutron_periodic_worker",
+                "language": "python",
+            },
+            {
+                "name": "neutron-ovn-maintenance-worker",
+                "container_name": "neutron_ovn_maintenance_worker",
+                "language": "python",
+            },
+            {
+                "name": "neutron-openvswitch-agent",
+                "container_name": "neutron_openvswitch_agent",
+                "language": "python",
+            },
+            {
+                "name": "neutron-dhcp-agent",
+                "container_name": "neutron_dhcp_agent",
+                "language": "python",
+            },
+            {
+                "name": "neutron-l3-agent",
+                "container_name": "neutron_l3_agent",
+                "language": "python",
+            },
+            {
+                "name": "neutron-metadata-agent",
+                "container_name": "neutron_metadata_agent",
+                "language": "python",
+            },
+            {
+                "name": "neutron-ovn-metadata-agent",
+                "container_name": "neutron_ovn_metadata_agent",
+                "language": "python",
+            },
+            {
+                "name": "neutron-metering-agent",
+                "container_name": "neutron_metering_agent",
+                "language": "python",
+            },
+            {
+                "name": "neutron-bgp-dragent",
+                "container_name": "neutron_bgp_dragent",
+                "language": "python",
+            },
+            {
+                "name": "neutron-sriov-agent",
+                "container_name": "neutron_sriov_agent",
+                "language": "python",
+            },
+            {
+                "name": "ironic-neutron-agent",
+                "container_name": "ironic_neutron_agent",
                 "language": "python",
             },
         ],
@@ -339,22 +406,39 @@ DEFAULT_SERVICES: list[dict[str, Any]] = [
 ]
 
 #: Service names (the hyphenated ``name``) whose Python process runs under
-#: eventlet and therefore needs the agent to monkey-patch before instrumenting.
-#: The RPC/worker daemons and the eventlet-based API servers; NOT the
-#: uWSGI/mod_wsgi services (keystone, nova-api, cinder-api, placement-api),
-#: where monkey-patching would be wrong. Mirrors ``otel_eventlet_services`` in
-#: the role defaults (kept in sync by test_instrumentation.py).
+#: eventlet and therefore needs the agent to monkey-patch before instrumenting:
+#: the RPC/worker daemons, the neutron agents, and the API servers that run
+#: under eventlet rather than a pure uWSGI/mod_wsgi stack. ``keystone`` and
+#: ``placement-api`` are excluded (mod_wsgi/uWSGI, where monkey-patching would
+#: be wrong); override with ``otel_eventlet_services`` if your deployment runs
+#: a given API differently. Mirrors ``otel_eventlet_services`` in the role
+#: defaults (kept in sync by test_instrumentation.py).
 #: The env var that tells the Python agent to eventlet-monkey-patch first.
 EVENTLET_ENV_KEY = "OTEL_PYTHON_EVENTLET_MONKEY_PATCH"
 
 DEFAULT_EVENTLET_SERVICES: list[str] = [
+    "nova-api",
     "nova-conductor",
     "nova-scheduler",
     "nova-compute",
+    "cinder-api",
     "cinder-scheduler",
     "cinder-volume",
     "cinder-backup",
+    # neutron server and every agent/worker run under eventlet
     "neutron-server",
+    "neutron-rpc-server",
+    "neutron-periodic-worker",
+    "neutron-ovn-maintenance-worker",
+    "neutron-openvswitch-agent",
+    "neutron-dhcp-agent",
+    "neutron-l3-agent",
+    "neutron-metadata-agent",
+    "neutron-ovn-metadata-agent",
+    "neutron-metering-agent",
+    "neutron-bgp-dragent",
+    "neutron-sriov-agent",
+    "ironic-neutron-agent",
     "glance-api",
     "heat-api",
     "heat-engine",

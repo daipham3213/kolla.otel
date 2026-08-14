@@ -11,8 +11,15 @@
       {{ otel_language_defaults[otel_service.language] | default({})
          | combine(otel_languages[otel_service.language] | default({}),
                    recursive=True) }}
-    otel_attrs: "{{ otel_container_facts.containers[otel_service.container_name] }}"
-    otel_current_env: "{{ otel_env_facts.envs[otel_service.container_name] | default({}) }}"
+    otel_attrs: "{{ otel_containers[otel_service.container_name] }}"
+    # Current env parsed from the container's Config.Env ("KEY=VALUE" list):
+    # keys are the text before the first '=', values everything after it.
+    otel_current_env: >-
+      {{ dict((otel_containers[otel_service.container_name].Config.Env
+               | default([])) | map('regex_replace', '=.*$', '') | list
+              | zip((otel_containers[otel_service.container_name].Config.Env
+                     | default([])) | map('regex_replace', '^[^=]*=', '')
+                    | list)) }}
     # Host directory staged by stage.yml and bind-mounted into the container.
     otel_host_lib_dir: "{{ otel_host_lib_path }}/{{ otel_service.language }}"
 

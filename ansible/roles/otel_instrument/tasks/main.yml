@@ -66,30 +66,55 @@
                    if otel_deployment_environment | length > 0 else {})
          | combine(otel_resource_attributes_extra) }}
 
+# The role needs each container's full inspect attrs (Config.Env / Config.Labels
+# / HostConfig.Binds / privileged / …). Newer kolla_container_facts returns them
+# via `action=get_containers`; older kolla (e.g. 18.8.0) has no `action` and its
+# docker path returns only the `docker ps` summary (no Config/HostConfig). So try
+# the modern facts module, and on failure fall back to inspecting the containers
+# directly with the container engine — which yields full attrs on any release.
+# Both paths normalize into otel_containers = {container_name: attrs}, and the
+# current environment is derived from attrs.Config.Env (no separate env call).
 - name: Discover which target containers are present on this host
-  become: true
-  kolla_container_facts:
-    container_engine: "{{ kolla_container_engine }}"
-    action: get_containers
-    name: "{{ otel_instrument_services_all | map(attribute='container_name') | list }}"
-  register: otel_container_facts
+  vars:
+    otel_target_names: >-
+      {{ otel_instrument_services_all
+         | map(attribute='container_name') | list }}
+  block:
+    - name: Discover present containers (modern kolla_container_facts)
+      become: true
+      kolla_container_facts:
+        container_engine: "{{ kolla_container_engine }}"
+        action: get_containers
+        name: "{{ otel_target_names }}"
+      register: otel_facts_modern
+    - name: Normalize modern container facts
+      ansible.builtin.set_fact:
+        otel_containers: "{{ otel_facts_modern.containers }}"
+  rescue:
+    - name: Inspect present target containers directly (legacy kolla)
+      # `<engine> inspect` emits a JSON array of the containers that exist and
+      # errors (non-zero) on any that do not; keep the found ones regardless.
+      become: true
+      ansible.builtin.command:
+        argv: "{{ [kolla_container_engine, 'inspect'] + otel_target_names }}"
+      register: otel_inspect
+      changed_when: false
+      failed_when: false
+    - name: Normalize inspected container attrs
+      vars:
+        otel_inspected: "{{ (otel_inspect.stdout | trim or '[]') | from_json }}"
+      ansible.builtin.set_fact:
+        otel_containers: >-
+          {{ dict(otel_inspected | map(attribute='Name')
+                  | map('regex_replace', '^/', '') | list
+                  | zip(otel_inspected)) }}
 
 - name: Select the target services present on this host
   ansible.builtin.set_fact:
     otel_present_services: >-
       {{ otel_instrument_services_all
-         | selectattr('container_name', 'in',
-                      otel_container_facts.containers.keys() | list)
+         | selectattr('container_name', 'in', otel_containers.keys() | list)
          | list }}
-
-- name: Gather current environment of the present containers
-  become: true
-  kolla_container_facts:
-    container_engine: "{{ kolla_container_engine }}"
-    action: get_containers_env
-    name: "{{ otel_present_services | map(attribute='container_name') | list }}"
-  register: otel_env_facts
-  when: otel_present_services | length > 0
 
 # Stage each distinct language once (pull + copy), rather than repeating the
 # per-language work inside the per-service loop below.

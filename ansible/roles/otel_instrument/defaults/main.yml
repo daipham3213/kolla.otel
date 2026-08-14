@@ -187,8 +187,26 @@ otel_services_cinder:
   - {name: cinder-backup, container_name: cinder_backup, language: python}
 otel_services_glance:
   - {name: glance-api, container_name: glance_api, language: python}
+# neutron deploys a family of agent/worker containers that varies by backend
+# (openvswitch / ovn) and features (DVR, metering, BGP, SR-IOV, ironic). They
+# are all Python + eventlet; only those actually present on a host are
+# instrumented, so the same list is correct across backends and node roles.
+# Vendor plugins (mlnx/eswitchd/infoblox) can be added via
+# otel_instrument_extra_services.
 otel_services_neutron:
   - {name: neutron-server, container_name: neutron_server, language: python}
+  - {name: neutron-rpc-server, container_name: neutron_rpc_server, language: python}
+  - {name: neutron-periodic-worker, container_name: neutron_periodic_worker, language: python}
+  - {name: neutron-ovn-maintenance-worker, container_name: neutron_ovn_maintenance_worker, language: python}
+  - {name: neutron-openvswitch-agent, container_name: neutron_openvswitch_agent, language: python}
+  - {name: neutron-dhcp-agent, container_name: neutron_dhcp_agent, language: python}
+  - {name: neutron-l3-agent, container_name: neutron_l3_agent, language: python}
+  - {name: neutron-metadata-agent, container_name: neutron_metadata_agent, language: python}
+  - {name: neutron-ovn-metadata-agent, container_name: neutron_ovn_metadata_agent, language: python}
+  - {name: neutron-metering-agent, container_name: neutron_metering_agent, language: python}
+  - {name: neutron-bgp-dragent, container_name: neutron_bgp_dragent, language: python}
+  - {name: neutron-sriov-agent, container_name: neutron_sriov_agent, language: python}
+  - {name: ironic-neutron-agent, container_name: ironic_neutron_agent, language: python}
 otel_services_placement:
   - {name: placement-api, container_name: placement_api, language: python}
 otel_services_heat:
@@ -222,13 +240,28 @@ otel_instrument_extra_services: []
 # (keystone, nova-api, cinder-api, placement-api), where monkey-patching would
 # be wrong. Set to [] to disable everywhere, or adjust for your deployment.
 otel_eventlet_services:
+  - nova-api
   - nova-conductor
   - nova-scheduler
   - nova-compute
+  - cinder-api
   - cinder-scheduler
   - cinder-volume
   - cinder-backup
+  # neutron server and every agent/worker run under eventlet
   - neutron-server
+  - neutron-rpc-server
+  - neutron-periodic-worker
+  - neutron-ovn-maintenance-worker
+  - neutron-openvswitch-agent
+  - neutron-dhcp-agent
+  - neutron-l3-agent
+  - neutron-metadata-agent
+  - neutron-ovn-metadata-agent
+  - neutron-metering-agent
+  - neutron-bgp-dragent
+  - neutron-sriov-agent
+  - ironic-neutron-agent
   - glance-api
   - heat-api
   - heat-engine

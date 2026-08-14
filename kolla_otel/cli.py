@@ -4,7 +4,11 @@ Registered under the ``kolla_ansible.cli`` entry-point namespace (see
 ``pyproject.toml``), these commands follow the same pattern as the built-in
 commands in ``kolla_ansible.cli.commands``: they mix in
 :class:`~kolla_ansible.cli.commands.KollaAnsibleMixin` and run a playbook via
-``run_playbooks``.
+``run_playbooks``. On kolla-ansible releases that ship no Python CLI (e.g.
+18.8.0), that mixin is unavailable, so the commands fall back to
+:class:`kolla_otel.localrun.LocalRunnerMixin`, which runs the same playbook by
+invoking ``ansible-playbook`` directly — the ``kolla-otel`` console script
+therefore works regardless of the kolla-ansible CLI version.
 
 * ``otel-instrument`` runs ``otel-instrument.yml`` (the ``otel_instrument``
   role), which injects the opentelemetry-operator auto-instrumentation agent
@@ -33,8 +37,22 @@ from pathlib import Path
 
 import yaml
 from cliff.command import Command
-from kolla_ansible.cli.commands import KollaAnsibleMixin
-from kolla_ansible.utils import get_data_files_path
+
+# kolla-ansible's Python CLI provides the command mixin and the data-file
+# resolver. It does not exist on older releases (e.g. 18.8.0, where
+# kolla-ansible is the bash entry point), so fall back to a self-contained
+# runner that invokes ansible-playbook directly. Either way the commands below
+# are unchanged; only how they add args and launch the playbook differs.
+try:
+    from kolla_ansible.cli.commands import KollaAnsibleMixin
+    from kolla_ansible.utils import get_data_files_path
+except ImportError:  # kolla-ansible without a Python CLI (e.g. 18.8.0)
+    from kolla_otel.localrun import (  # type: ignore[assignment]
+        LocalRunnerMixin as KollaAnsibleMixin,
+    )
+    from kolla_otel.localrun import (  # type: ignore[assignment]
+        resolve_data_file as get_data_files_path,
+    )
 
 from kolla_otel.config import load_config
 from kolla_otel.exceptions import KollaOtelError
