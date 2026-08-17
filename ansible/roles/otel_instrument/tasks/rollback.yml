@@ -81,8 +81,11 @@
   vars:
     hc: "{{ otel_attrs.Config.Healthcheck | default({}) }}"
   ansible.builtin.set_fact:
+    # An empty dict (not `omit`) when there is no healthcheck: `omit` as a
+    # set_fact value drops the only key, failing with "No key/value pairs
+    # provided". The recreate task turns a falsy value back into `omit`.
     otel_healthcheck: >-
-      {{ omit if (not hc or hc.Test | default([]) in [['NONE'], []]) else {
+      {{ {} if (not hc or hc.Test | default([]) in [['NONE'], []]) else {
            'test': hc.Test,
            'interval': (hc.Interval | default(0) | int) // 1000000000,
            'timeout': (hc.Timeout | default(0) | int) // 1000000000,
@@ -119,4 +122,4 @@
          else omit }}
     cap_add: "{{ otel_attrs.HostConfig.CapAdd | default([]) or omit }}"
     security_opt: "{{ otel_attrs.HostConfig.SecurityOpt | default([]) or omit }}"
-    healthcheck: "{{ otel_healthcheck }}"
+    healthcheck: "{{ otel_healthcheck or omit }}"
