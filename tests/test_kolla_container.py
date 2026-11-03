@@ -376,14 +376,19 @@ class KollaContainerActionTestCase:
         assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
         assert env["OTEL_PYTHON_CONFIGURATOR"] == "oslo_service"
 
-    def test_eventlet_service_gets_monkey_patch(self):
-        """An eventlet-based service (nova_conductor) is told to monkey-patch
-        the runtime before instrumenting."""
+    def test_no_eventlet_patch_by_default(self):
+        """No service is eventlet-monkey-patched by default: in 2026.1 the
+        services that historically ran on eventlet now request the threading
+        backend, and forcing the eventlet patch first kills them at import
+        (BackendAlreadySelected). The patch is opt-in via
+        otel_eventlet_extra_services; the service is still instrumented."""
         sink = {}
         args = dict(_TARGET_ARGS, name="nova_conductor")
         _plugin(args, sink).run(task_vars=dict(_ENABLED))
         env = sink["args"]["environment"]
-        assert env["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"] == "true"
+        assert "OTEL_PYTHON_EVENTLET_MONKEY_PATCH" not in env
+        assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
+        assert "kolla_otel.managed_env" in sink["args"]["labels"]
 
     def test_wsgi_service_has_no_monkey_patch(self):
         """A uWSGI/mod_wsgi service (keystone) must NOT be monkey-patched."""
@@ -396,27 +401,26 @@ class KollaContainerActionTestCase:
         assert env["OTEL_PYTHON_DISTRO"] == "oslo_service"
         assert "kolla_otel.managed_env" in sink["args"]["labels"]
 
-    def test_eventlet_extra_services_extend_the_list(self):
-        """otel_eventlet_extra_services adds to (not replaces) the eventlet
-        list, so a non-core target can be marked eventlet without restating
-        the built-in list."""
+    def test_eventlet_extra_services_opt_in(self):
+        """otel_eventlet_extra_services opts a service into the eventlet
+        monkey-patch (the built-in default is now empty). A service not in the
+        list is left unpatched."""
         task_vars = dict(_ENABLED, otel_eventlet_extra_services=["nova-api"])
-        # nova-api is WSGI by default (not in otel_eventlet_services), but the
-        # extra list opts it in.
+        # nova-api is opted in via the extra list.
         sink = {}
         _plugin(_TARGET_ARGS, sink).run(task_vars=task_vars)
         assert (
             sink["args"]["environment"]["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"]
             == "true"
         )
-        # ...and the built-in eventlet defaults still apply alongside it.
+        # ...a service not in the opt-in list is left unpatched.
         sink2 = {}
         _plugin(dict(_TARGET_ARGS, name="nova_conductor"), sink2).run(
             task_vars=task_vars
         )
         assert (
-            sink2["args"]["environment"]["OTEL_PYTHON_EVENTLET_MONKEY_PATCH"]
-            == "true"
+            "OTEL_PYTHON_EVENTLET_MONKEY_PATCH"
+            not in sink2["args"]["environment"]
         )
 
     def test_extra_services_extend_the_target_list(self):

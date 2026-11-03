@@ -405,44 +405,24 @@ DEFAULT_SERVICES: list[dict[str, Any]] = [
     for service in group["services"]
 ]
 
-#: Service names (the hyphenated ``name``) whose Python process runs under
-#: eventlet and therefore needs the agent to monkey-patch before instrumenting:
-#: the RPC/worker daemons, the neutron agents, and the API servers that run
-#: under eventlet rather than a pure uWSGI/mod_wsgi stack. ``keystone`` and
-#: ``placement-api`` are excluded (mod_wsgi/uWSGI, where monkey-patching would
-#: be wrong); override with ``otel_eventlet_services`` if your deployment runs
-#: a given API differently. Mirrors ``otel_eventlet_services`` in the role
-#: defaults (kept in sync by test_instrumentation.py).
 #: The env var that tells the Python agent to eventlet-monkey-patch first.
 EVENTLET_ENV_KEY = "OTEL_PYTHON_EVENTLET_MONKEY_PATCH"
 
-DEFAULT_EVENTLET_SERVICES: list[str] = [
-    "nova-api",
-    "nova-conductor",
-    "nova-scheduler",
-    "nova-compute",
-    "cinder-api",
-    "cinder-scheduler",
-    "cinder-volume",
-    "cinder-backup",
-    # neutron server and every agent/worker run under eventlet
-    "neutron-server",
-    "neutron-rpc-server",
-    "neutron-periodic-worker",
-    "neutron-ovn-maintenance-worker",
-    "neutron-openvswitch-agent",
-    "neutron-dhcp-agent",
-    "neutron-l3-agent",
-    "neutron-metadata-agent",
-    "neutron-ovn-metadata-agent",
-    "neutron-metering-agent",
-    "neutron-bgp-dragent",
-    "neutron-sriov-agent",
-    "ironic-neutron-agent",
-    "glance-api",
-    "heat-api",
-    "heat-engine",
-]
+#: Service names (the hyphenated ``name``) that get the eventlet monkey-patch by
+#: default. EMPTY on purpose: recent oslo.service (2026.1) has services that
+#: previously ran on eventlet now request the threading backend explicitly
+#: (nova-scheduler via ``nova.monkey_patch.patch(backend='threading')``; every
+#: neutron service via ``neutron.cmd.server/agents.__init__ ->
+#: init_backend(BackendType.THREADING)``). Applying the eventlet patch first
+#: selects the eventlet backend, so those calls raise
+#: ``oslo_service BackendAlreadySelected`` and kill the process at import.
+#: The OpenStack instrumentation (oslo-log / oslo-messaging / keystonemiddleware
+#: / openstacksdk) is backend-agnostic, so tracing is not lost. Opt a service in
+#: via ``otel_eventlet_extra_services`` only when it genuinely runs under
+#: eventlet and needs cross-green-thread context propagation. Mirrors
+#: ``otel_eventlet_services`` in the role defaults (kept in sync by
+#: test_instrumentation.py).
+DEFAULT_EVENTLET_SERVICES: list[str] = []
 
 
 def deep_merge(

@@ -372,12 +372,13 @@ class ActionModule(ActionBase):
             self._var(task_vars, "otel_resource_attributes_extra", {}) or {},
             service.get("resource_attributes") or {},
         )
-        # Eventlet-based OpenStack services need the agent to monkey-patch
-        # first. The list is otel_eventlet_services (default: all eventlet
-        # services) plus anything the operator added via
-        # otel_eventlet_extra_services (extend, not override). Layer it as a
-        # managed default below the service's own environment, so an explicit
-        # per-service value still wins.
+        # Eventlet monkey-patch is opt-in: the list is otel_eventlet_services
+        # (default: empty, so nothing is patched) plus anything the operator
+        # added via otel_eventlet_extra_services (extend, not override). Only
+        # services genuinely running under eventlet belong there — threading-
+        # backend services (nova-scheduler, the neutron family) crash at import
+        # if this patch is forced on them. Layer it as a managed default below
+        # the service's own environment, so an explicit per-service value wins.
         eventlet_services = self._var(
             task_vars, "otel_eventlet_services", None
         )
