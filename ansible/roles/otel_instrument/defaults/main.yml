@@ -235,43 +235,29 @@ otel_instrument_extra_services: []
 
 # Services (by `name`) whose Python process runs under eventlet and so need the
 # agent to eventlet-monkey-patch before instrumenting. Any target whose name is
-# in this list gets OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true. Defaults to all the
-# eventlet daemons/servers; it deliberately excludes the uWSGI/mod_wsgi services
-# (keystone, nova-api, cinder-api, placement-api), where monkey-patching would
-# be wrong. Set to [] to disable everywhere, or adjust for your deployment.
-otel_eventlet_services:
-  - nova-api
-  - nova-conductor
-  - nova-scheduler
-  - nova-compute
-  - cinder-api
-  - cinder-scheduler
-  - cinder-volume
-  - cinder-backup
-  # neutron server and every agent/worker run under eventlet
-  - neutron-server
-  - neutron-rpc-server
-  - neutron-periodic-worker
-  - neutron-ovn-maintenance-worker
-  - neutron-openvswitch-agent
-  - neutron-dhcp-agent
-  - neutron-l3-agent
-  - neutron-metadata-agent
-  - neutron-ovn-metadata-agent
-  - neutron-metering-agent
-  - neutron-bgp-dragent
-  - neutron-sriov-agent
-  - ironic-neutron-agent
-  - glance-api
-  - heat-api
-  - heat-engine
+# in this list gets OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true.
+#
+# Default is EMPTY. Recent oslo.service (2026.1) has services that previously
+# ran on eventlet now *request the threading backend explicitly*:
+#   nova-scheduler -> nova.monkey_patch.patch(backend='threading')
+#   every neutron  -> neutron.cmd.server/agents __init__
+#                     -> init_backend(BackendType.THREADING)
+# Applying the eventlet patch first selects the eventlet backend, so those
+# init_backend(THREADING) calls raise oslo_service BackendAlreadySelected and
+# kill the process at import (service never starts). The OpenStack
+# instrumentation (oslo-log / oslo-messaging / keystonemiddleware /
+# openstacksdk) is backend-agnostic, so omitting the patch does not lose
+# tracing. Opt a service in via otel_eventlet_extra_services only when it
+# genuinely runs under eventlet and needs cross-green-thread context
+# propagation.
+otel_eventlet_services: []
 
-# Additional eventlet service names, EXTENDING (not replacing)
-# otel_eventlet_services. Use this to mark your own targets (e.g. non-core
-# services added via otel_instrument_extra_services) as needing eventlet
-# monkey-patching, without restating the built-in list:
+# Opt-in for the eventlet monkey-patch. EXTENDS (not replaces)
+# otel_eventlet_services. Add a service here only if it genuinely runs under
+# eventlet and needs cross-green-thread context propagation — do NOT add
+# threading-backend services (e.g. nova-scheduler, the neutron family) here,
+# since that is exactly what kills them at import:
 #   otel_eventlet_extra_services:
-#     - neutron-ovn-metadata-agent
 #     - octavia-worker
 otel_eventlet_extra_services: []
 

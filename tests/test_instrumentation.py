@@ -199,24 +199,21 @@ class InstrumentationTestCase:
             assert "OTEL_PYTHON_DISTRO" not in act
 
     def test_default_eventlet_services_classification(self) -> None:
-        """Eventlet daemons/servers/agents are listed; uWSGI/mod_wsgi ones are
-        not, and every listed name is a real target."""
-        eventlet = set(instr.DEFAULT_EVENTLET_SERVICES)
-        # representative eventlet daemons, incl. neutron agents/workers
-        assert {
-            "nova-conductor",
-            "cinder-volume",
-            "heat-engine",
+        """Nothing is eventlet-monkey-patched by default: in 2026.1 the
+        services that historically ran on eventlet now request the threading
+        backend, and forcing the eventlet patch first makes their
+        init_backend(THREADING) raise BackendAlreadySelected (kills at import).
+        The patch is now opt-in via otel_eventlet_extra_services."""
+        assert instr.DEFAULT_EVENTLET_SERVICES == []
+        # threading-backend services must never be opted in by default (they
+        # crash at import). Pinned so a regression that re-adds a hardcoded
+        # list is caught.
+        assert not set(instr.DEFAULT_EVENTLET_SERVICES) & {
+            "nova-scheduler",
             "neutron-server",
+            "neutron-rpc-server",
             "neutron-openvswitch-agent",
-            "neutron-ovn-metadata-agent",
-            "neutron-l3-agent",
-            "neutron-metering-agent",
-        } <= eventlet
-        catalog = {s["name"] for s in instr.DEFAULT_SERVICES}
-        assert eventlet <= catalog  # every eventlet name is a known target
-        # the mod_wsgi/uWSGI services are deliberately excluded
-        assert eventlet.isdisjoint({"keystone", "placement-api"})
+        }
 
     def test_neutron_group_covers_backends_and_features(self) -> None:
         """The neutron group carries the agent/worker containers for OVS, OVN
@@ -260,15 +257,19 @@ class InstrumentationTestCase:
         assert nova_only == instr.DEFAULT_SERVICE_GROUPS["nova"]["services"]
 
     def test_eventlet_environment(self) -> None:
-        assert instr.eventlet_environment(
-            "nova-conductor", instr.DEFAULT_EVENTLET_SERVICES
-        ) == {"OTEL_PYTHON_EVENTLET_MONKEY_PATCH": "true"}
+        # default (empty list): no service is patched
         assert (
             instr.eventlet_environment(
-                "keystone", instr.DEFAULT_EVENTLET_SERVICES
+                "nova-conductor", instr.DEFAULT_EVENTLET_SERVICES
             )
             == {}
         )
+        # opt-in: an explicit list still patches the named service
+        assert instr.eventlet_environment(
+            "nova-conductor", ["nova-conductor"]
+        ) == {"OTEL_PYTHON_EVENTLET_MONKEY_PATCH": "true"}
+        # a service not in the opt-in list is not patched
+        assert instr.eventlet_environment("keystone", ["nova-conductor"]) == {}
         assert instr.eventlet_environment("nova-conductor", []) == {}
         assert instr.eventlet_environment("nova-conductor", None) == {}
 
