@@ -21,6 +21,39 @@
     otel_instrument_services_all: >-
       {{ otel_instrument_services + otel_instrument_extra_services }}
 
+# --tags / --skip-tags select services, not Ansible tasks (the playbooks carry
+# no Ansible tags). See otel_service_tags in defaults for the matching rules.
+- name: Restrict targets to the services selected by --tags / --skip-tags
+  when: otel_service_filtered | bool
+  vars:
+    otel_tags: "{{ otel_service_tags.split(',') | map('trim') | select | list }}"
+    otel_skip_tags: "{{ otel_service_skip_tags.split(',') | map('trim') | select | list }}"
+  ansible.builtin.set_fact:
+    otel_instrument_services_all: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for svc in otel_instrument_services_all -%}
+      {%-   set sel = namespace(inc=(otel_tags | length == 0), exc=false) -%}
+      {%-   for tag in otel_tags + otel_skip_tags -%}
+      {%-     set hit = tag in [svc.name, svc.container_name]
+                or svc.name.startswith(tag ~ '-')
+                or svc.name in (lookup('vars', 'otel_services_' ~ tag, default=[])
+                                | map(attribute='name') | list) -%}
+      {%-     if hit and tag in otel_tags %}{% set sel.inc = true %}{% endif -%}
+      {%-     if hit and tag in otel_skip_tags %}{% set sel.exc = true %}{% endif -%}
+      {%-   endfor -%}
+      {%-   if sel.inc and not sel.exc %}{% set ns.out = ns.out + [svc] %}{% endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+
+- name: Fail when --tags / --skip-tags matched no service
+  when: otel_service_filtered | bool
+  run_once: true
+  ansible.builtin.assert:
+    that: otel_instrument_services_all | length > 0
+    fail_msg: >-
+      tags='{{ otel_service_tags }}' skip_tags='{{ otel_service_skip_tags }}'
+      matched no target service.
+
 # When no external collector is configured, target the per-host local
 # collector (deployed by the otel_collector role). This makes the exporter
 # endpoint always well-defined, so there is nothing left to validate.
@@ -150,6 +183,8 @@
   when:
     - otel_action == 'rollback'
     - otel_rollback_remove_agent | bool
+    # unselected services may still mount the agent
+    - not otel_service_filtered | bool
     - otel_present_services | length > 0
   become: true
   ansible.builtin.file:

@@ -191,6 +191,7 @@ See [`defaults/main.yml`](defaults/main.yml). The essentials:
 | `otel_extra_environment` | Extra env applied to **every** service (map). |
 | `otel_managed_env_label` | Container label recording managed env keys (default `kolla_otel.managed_env`). |
 | `otel_instrument_services` | The target list. Defaults to the per-project `otel_services_*` lists gated by kolla's `enable_<project>` flags; override to take full control. Each entry is `{name, container_name, language}` plus optional `otel_service_name`, `resource_attributes`, `environment`. |
+| `otel_service_tags` / `otel_service_skip_tags` | Comma-separated filters on the targets, set by the CLI's `--tags` / `--skip-tags`. A tag matches a project (`nova` → every `otel_services_nova` entry), a service `name`, a `container_name`, or a `name` prefix (`octavia` → `octavia-api`). A filter matching nothing fails the run. A filtered rollback keeps the staged agent and the local collector, since other services may still use them. |
 | `otel_instrument_extra_services` | Additional targets **extending** (not replacing) `otel_instrument_services`, same entry schema. Add your own services here without restating the built-in list. |
 | `otel_eventlet_services` | Service names (by `name`) that get `OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true`. Defaults to all eventlet daemons/servers; set `[]` to disable. |
 | `otel_eventlet_extra_services` | Additional eventlet service names **extending** (not replacing) `otel_eventlet_services`. Mark your own targets as needing eventlet without restating the built-in list. |

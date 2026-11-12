@@ -141,6 +141,34 @@ class LocalRunnerMixinTestCase:
         assert args.extra_vars == ["k=v"]
         assert args.configdir == localrun.DEFAULT_CONFIG_PATH
 
+    def test_reconfigure_style_flags_are_forwarded(self) -> None:
+        parser = self._command().get_parser("instrument")
+        args = parser.parse_args(
+            [
+                "-l", "compute01",
+                "-t", "nova",
+                "--skip-tags", "cinder",
+                "--vault-id", "a@prompt",
+                "--vault-pass-file", "/v1",
+                "-J", "-C", "-D", "-lt",
+            ]
+        )  # fmt: skip
+        assert localrun.passthrough_args(args) == [
+            "--vault-id", "a@prompt",
+            "--vault-password-file", "/v1",
+            "--limit", "compute01",
+            "--ask-vault-password", "--check", "--diff", "--list-tasks",
+        ]  # fmt: skip
+        cmd = localrun.build_playbook_command(
+            ["pb.yml"],
+            passthrough=localrun.passthrough_args(args),
+            exists=lambda p: False,
+        )
+        assert cmd[-1] == "pb.yml"
+        assert cmd[cmd.index("--limit") + 1] == "compute01"
+        # Nothing forwarded when no flags are given.
+        assert localrun.passthrough_args(parser.parse_args([])) == []
+
     def test_run_playbooks_builds_and_runs_command(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
