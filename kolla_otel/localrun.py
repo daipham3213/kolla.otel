@@ -43,6 +43,7 @@ __all__ = [
     "data_file_candidates",
     "resolve_data_file",
     "build_playbook_command",
+    "passthrough_args",
     "ansible_env",
     "run",
     "LocalRunnerMixin",
@@ -95,6 +96,42 @@ def resolve_data_file(*parts: str) -> str:
     return candidates[0] if candidates else os.path.join(*parts)
 
 
+#: ansible-playbook options forwarded verbatim, keyed by argparse ``dest``.
+_LIST_ARGS = {
+    "vault_id": "--vault-id",
+    "vault_password_file": "--vault-password-file",
+}
+_VALUE_ARGS = {"limit": "--limit"}
+_FLAG_ARGS = {
+    "ask_vault_password": "--ask-vault-password",
+    "check": "--check",
+    "diff": "--diff",
+    "list_tasks": "--list-tasks",
+}
+
+
+def passthrough_args(parsed_args: argparse.Namespace) -> list[str]:
+    """Return the ansible-playbook options forwarded as-is from the CLI.
+
+    Covers the kolla-ansible flags not otherwise handled here (``--limit``,
+    vault options, ``--check``/``--diff``, ``--list-tasks``). ``--tags`` /
+    ``--skip-tags`` are not forwarded: the command turns them into service
+    filters. Missing attributes are treated as unset.
+    """
+    args: list[str] = []
+    for dest, flag in _LIST_ARGS.items():
+        for value in getattr(parsed_args, dest, None) or []:
+            args += [flag, value]
+    for dest, flag in _VALUE_ARGS.items():
+        value = getattr(parsed_args, dest, None)
+        if value:
+            args += [flag, value]
+    for dest, flag in _FLAG_ARGS.items():
+        if getattr(parsed_args, dest, False):
+            args.append(flag)
+    return args
+
+
 def build_playbook_command(
     playbooks: Sequence[str],
     *,
@@ -105,14 +142,16 @@ def build_playbook_command(
     passwords: str | None = None,
     become: bool = False,
     verbose_level: int = 0,
+    passthrough: Sequence[str] = (),
     exists: Callable[[str], bool] = os.path.isfile,
 ) -> list[str]:
     """Build the ``ansible-playbook`` argv, mirroring kolla's own runner.
 
     Loads ``globals.yml`` and ``passwords.yml`` from ``config_path`` (when they
     exist) as extra-var files, appends any raw ``cli_extra_vars`` and the JSON
-    ``extra_vars`` mapping, and adds ``--become`` when requested — matching the
-    order kolla-ansible uses. ``exists`` is injectable for testing.
+    ``extra_vars`` mapping, adds ``--become`` when requested and then the
+    ``passthrough`` options — matching the order kolla-ansible uses.
+    ``exists`` is injectable for testing.
     """
     command: list[str] = ["ansible-playbook"]
     if verbose_level > 0:
@@ -134,6 +173,7 @@ def build_playbook_command(
 
     if become:
         command.append("--become")
+    command += list(passthrough)
 
     command += list(playbooks)
     return command
@@ -188,9 +228,53 @@ class LocalRunnerMixin(Command):
             help="Ansible inventory path (repeatable).",
         )
         ansible.add_argument(
+            "-b",
             "--become",
             action="store_true",
             help="run operations with become (root).",
+        )
+        ansible.add_argument(
+            "-l", "--limit", metavar="SUBSET", help="limit to a host pattern."
+        )
+        ansible.add_argument(
+            "-t", "--tags", metavar="TAGS", help="only these services."
+        )
+        ansible.add_argument(
+            "--skip-tags", metavar="TAGS", help="skip these services."
+        )
+        ansible.add_argument(
+            "-C", "--check", action="store_true", help="dry run."
+        )
+        ansible.add_argument(
+            "-D", "--diff", action="store_true", help="show file diffs."
+        )
+        ansible.add_argument(
+            "-lt",
+            "--list-tasks",
+            action="store_true",
+            help="only list tasks, don't run them.",
+        )
+        ansible.add_argument(
+            "--vault-id",
+            action="append",
+            default=[],
+            metavar="VAULT_ID",
+            help="vault identity (repeatable).",
+        )
+        ansible.add_argument(
+            "--vault-password-file",
+            "--vault-pass-file",
+            action="append",
+            default=[],
+            metavar="PATH",
+            help="vault password file (repeatable).",
+        )
+        ansible.add_argument(
+            "-J",
+            "--ask-vault-password",
+            "--ask-vault-pass",
+            action="store_true",
+            help="ask for vault password.",
         )
         ansible.add_argument(
             "-e",
@@ -240,6 +324,7 @@ class LocalRunnerMixin(Command):
             passwords=getattr(parsed_args, "passwords", None),
             become=bool(getattr(parsed_args, "become", False)),
             verbose_level=verbose,
+            passthrough=passthrough_args(parsed_args),
         )
         env = ansible_env(os.path.dirname(playbooks[0]) if playbooks else "")
         try:

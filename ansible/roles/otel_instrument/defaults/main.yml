@@ -233,6 +233,15 @@ otel_instrument_services: >-
 # resource_attributes / environment).
 otel_instrument_extra_services: []
 
+# Narrow the targets above, kolla-style. Comma-separated; set by the CLI's
+# --tags / --skip-tags (e.g. `kolla-ansible otel-instrument --tags nova`). A tag
+# matches a project (any service in `otel_services_<tag>`), a service `name`,
+# a `container_name`, or a `name` prefix (`octavia` -> `octavia-api`).
+# Empty = no filtering.
+otel_service_tags: ""
+otel_service_skip_tags: ""
+otel_service_filtered: "{{ (otel_service_tags ~ otel_service_skip_tags) | trim | length > 0 }}"
+
 # Services (by `name`) whose Python process runs under eventlet and so need the
 # agent to eventlet-monkey-patch before instrumenting. Any target whose name is
 # in this list gets OTEL_PYTHON_EVENTLET_MONKEY_PATCH=true. Defaults to all the

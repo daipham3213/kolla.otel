@@ -123,6 +123,14 @@ class _OtelCommand(KollaAnsibleMixin, Command):
                 parsed_args.config,
             )
 
+        # kolla-style --tags/--skip-tags select services (nova, neutron, …),
+        # not Ansible tasks — the playbooks carry no Ansible tags, so
+        # forwarding them would run nothing. Hand them to the role instead.
+        for dest in ("tags", "skip_tags"):
+            if getattr(parsed_args, dest, None):
+                extra_vars[f"otel_service_{dest}"] = getattr(parsed_args, dest)
+                setattr(parsed_args, dest, None)
+
         playbooks = [get_data_files_path("ansible", f"{self.playbook}.yml")]
         self.run_playbooks(parsed_args, playbooks, extra_vars=extra_vars)
         return 0
@@ -211,6 +219,12 @@ class Collector(_OtelCommand):
 
     def take_action(self, parsed_args: argparse.Namespace) -> int:
         """Deploy or remove the collector depending on ``--remove``."""
+        if parsed_args.tags or parsed_args.skip_tags:
+            # The collector is per host and shared by every service.
+            raise KollaOtelError(
+                "otel-collector does not take --tags/--skip-tags; "
+                "use --limit to select hosts."
+            )
         if parsed_args.remove:
             self.start_message = "Removing the local OpenTelemetry collector"
         return super().take_action(parsed_args)

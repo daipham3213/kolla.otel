@@ -25,6 +25,10 @@
     - role: otel_instrument
       vars:
         otel_action: rollback
+    # Unselected services still export to the collector on a partial rollback.
     - role: otel_collector
+      when: >-
+        (otel_service_tags | default('') ~ otel_service_skip_tags
+         | default('')) | trim | length == 0
       vars:
         otel_action: rollback

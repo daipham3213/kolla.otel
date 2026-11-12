@@ -234,3 +234,37 @@ class CollectorCommandTestCase:
         extra = recorder["extra_vars"]
         assert extra["otel_action"] == "rollback"
         assert extra["otel_exporter_endpoint"] == "http://c:4317"
+
+
+class ServiceTagsTestCase:
+    """--tags/--skip-tags become service filters, not Ansible tag filters."""
+
+    def test_tags_become_role_vars_and_are_not_forwarded(
+        self, recorder
+    ) -> None:
+        cmd = _command()
+        recorder["install"](cmd)
+        args = cmd.get_parser("instrument").parse_args(
+            ["--tags", "nova,neutron", "--skip-tags", "nova_compute"]
+        )
+        cmd.take_action(args)
+        assert recorder["extra_vars"]["otel_service_tags"] == "nova,neutron"
+        assert recorder["extra_vars"]["otel_service_skip_tags"] == (
+            "nova_compute"
+        )
+        # Cleared so ansible-playbook does not filter (untagged) tasks away.
+        assert args.tags is None
+        assert args.skip_tags is None
+
+    def test_no_tags_adds_no_vars(self, recorder) -> None:
+        cmd = _command()
+        recorder["install"](cmd)
+        cmd.take_action(cmd.get_parser("instrument").parse_args([]))
+        assert "otel_service_tags" not in recorder["extra_vars"]
+
+    def test_collector_rejects_tags(self, recorder) -> None:
+        cmd = _collector()
+        recorder["install"](cmd)
+        args = cmd.get_parser("collector").parse_args(["--tags", "nova"])
+        with pytest.raises(KollaOtelError):
+            cmd.take_action(args)
